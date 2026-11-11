@@ -56,12 +56,33 @@ execute_process(COMMAND
   OUTPUT_VARIABLE GIT_SHA_1
   ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-configure_file("${MicroEjRootDirPath}/src/main/tree_version.c.in" "${CMAKE_CURRENT_BINARY_DIR}/tree_version.c" @ONLY)
+configure_file(
+    "${MicroEjRootDirPath}/src/main/tree_version.c.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/tree_version.c"
+    @ONLY
+)
 
+set(MFlashRootDirPath "${MicroEjRootDirPath}/../mcux-sdk/core/components/flash/mflash")
 
 add_executable(${MCUX_SDK_PROJECT_NAME}
     "${MicroEjRootDirPath}/src/main/npavee.c"
     "${MicroEjRootDirPath}/src/main/npavee.h"
+
+    "${MicroEjRootDirPath}/src/bsp/lora/lora.c"
+    "${MicroEjRootDirPath}/src/bsp/lora/lora.h"
+    "${MicroEjRootDirPath}/src/bsp/lora/lora_native.c"
+
+    "${MicroEjRootDirPath}/src/bsp/rtc/ds3231.c"
+    "${MicroEjRootDirPath}/src/bsp/rtc/ds3231.h"
+    "${MicroEjRootDirPath}/src/bsp/rtc/rtc_native.c"
+
+    "${MicroEjRootDirPath}/src/bsp/wifi/wifi_credential_storage.c"
+    "${MicroEjRootDirPath}/src/bsp/wifi/wifi_credential_storage.h"
+    "${MicroEjRootDirPath}/src/bsp/wifi/wifi_credential_native.c"
+
+    "${MFlashRootDirPath}/mflash_file.c"
+    "${MFlashRootDirPath}/frdmrw612/mflash_drv.c"
+
     "${MicroEjRootDirPath}/src/bsp/FreeRTOSConfig.h"
     "${MicroEjRootDirPath}/src/bsp/lwipopts.h"
     "${MicroEjRootDirPath}/src/bsp/pin_mux.c"
@@ -86,16 +107,23 @@ add_executable(${MCUX_SDK_PROJECT_NAME}
 )
 
 IF(NOT DEFINED MICROEJ_DEST_OVERRIDE)
-    SET( MICROEJ_DEST ${MicroEjRootDirPath})
-    SET( MICROEJ_DEST_LIB "/lib")
+    SET(MICROEJ_DEST ${MicroEjRootDirPath})
+    SET(MICROEJ_DEST_LIB "/lib")
 ELSE()
     SET(MICROEJ_DEST ${CMAKE_BINARY_DIR})
-    SET( MICROEJ_DEST_LIB "")
+    SET(MICROEJ_DEST_LIB "")
 ENDIF()
 
 target_include_directories(${MCUX_SDK_PROJECT_NAME} PRIVATE
     ${MicroEjRootDirPath}/src/main
     ${MicroEjRootDirPath}/src/bsp
+
+    ${MicroEjRootDirPath}/src/bsp/lora
+    ${MicroEjRootDirPath}/src/bsp/rtc
+    ${MicroEjRootDirPath}/src/bsp/wifi
+    ${MFlashRootDirPath}
+    ${MFlashRootDirPath}/frdmrw612
+
     ${MicroEjRootDirPath}/
     ${MICROEJ_DEST}/inc
     ${MicroEjRootDirPath}/port/core/inc
@@ -113,32 +141,64 @@ target_include_directories(${MCUX_SDK_PROJECT_NAME} PRIVATE
     ${MicroEjRootDirPath}/common/bsp/sdmmc
     ${MicroEjRootDirPath}/src/bsp
     ${MicroEjRootDirPath}/common/bsp/lpm
+
 if (ENABLE_WIFI)
     ${MicroEjRootDirPath}/ecom-wifi/inc
 endif (ENABLE_WIFI)
 )
 
 if (ENABLE_WIFI)
-set_source_files_properties("${MicroEjRootDirPath}/src/bsp/wifi_config.h" PROPERTIES COMPONENT_CONFIG_FILE "middleware_wifi_template")
-set_source_files_properties("${MicroEjRootDirPath}/src/bsp/lwiphooks.h" PROPERTIES COMPONENT_CONFIG_FILE "middleware_wifi_template")
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/src/bsp/wifi_config.h"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_wifi_template"
+)
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/src/bsp/lwiphooks.h"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_wifi_template"
+)
+
 endif (ENABLE_WIFI)
-set_source_files_properties("${MicroEjRootDirPath}/src/bsp/FreeRTOSConfig.h" PROPERTIES COMPONENT_CONFIG_FILE "middleware_freertos-kernel_template")
-set_source_files_properties("${MicroEjRootDirPath}/common/bsp/sdmmc/ffconf.h" PROPERTIES COMPONENT_CONFIG_FILE "middleware_fatfs_template_sd")
-set_source_files_properties("${MicroEjRootDirPath}/common/bsp/sdmmc/sdmmc_config.c" PROPERTIES COMPONENT_CONFIG_FILE "middleware_sdmmc_usdhc_template")
-set_source_files_properties("${MicroEjRootDirPath}/common/bsp/sdmmc/sdmmc_config.h" PROPERTIES COMPONENT_CONFIG_FILE "middleware_sdmmc_usdhc_template")
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/src/bsp/FreeRTOSConfig.h"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_freertos-kernel_template"
+)
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/common/bsp/sdmmc/ffconf.h"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_fatfs_template_sd"
+)
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/common/bsp/sdmmc/sdmmc_config.c"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_sdmmc_usdhc_template"
+)
+
+set_source_files_properties(
+    "${MicroEjRootDirPath}/common/bsp/sdmmc/sdmmc_config.h"
+    PROPERTIES COMPONENT_CONFIG_FILE "middleware_sdmmc_usdhc_template"
+)
 
 # mbedTLS Config
-target_compile_definitions(${MCUX_SDK_PROJECT_NAME} PRIVATE MBEDTLS_CONFIG_FILE="microej_mbedtls_config.h")
+target_compile_definitions(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    MBEDTLS_CONFIG_FILE="microej_mbedtls_config.h"
+)
 
 set(CMAKE_MODULE_PATH
     ${MicroEjRootDirPath}/port/core
     ${MicroEjRootDirPath}/port/cpuload
     ${MicroEjRootDirPath}/port/ecom-network
     ${MicroEjRootDirPath}/port/ecom-network-lwip
+
 if (ENABLE_WIFI)
     ${MicroEjRootDirPath}/port/ecom-wifi
     ${SdkOverlayRootDirPath}/middleware/wifi_nxp/
 endif (ENABLE_WIFI)
+
     ${MicroEjRootDirPath}/port/net
     ${MicroEjRootDirPath}/port/security
     ${MicroEjRootDirPath}/port/ssl
@@ -152,7 +212,10 @@ endif (ENABLE_WIFI)
     ${SdkMiddlewareDirPath}/coreHTTP
 )
 
+set(CONFIG_USE_driver_flexcomm_i2c true)
+
 include(${VeeSdkRootDirPath}/devices/RW612/all_lib_device.cmake)
+
 include(microej_core)
 include(microej_cpuload)
 include(microej_security)
@@ -164,7 +227,7 @@ include(npa_util)
 
 
 if (ENABLE_WIFI)
-  include(microej_ecom-wifi)
+    include(microej_ecom-wifi)
 endif (ENABLE_WIFI)
 
 include(microej_ecom-network)
@@ -173,20 +236,67 @@ include(microej_net)
 include(microej_trace)
 include(utility_segger)
 
-SET(TARGET_LINK_SYSTEM_LIBRARIES "-lm -lc -lgcc -lnosys")
+SET(
+    TARGET_LINK_SYSTEM_LIBRARIES
+    "-lm -lc -lgcc -lnosys"
+)
 
-TARGET_LINK_LIBRARIES(${MCUX_SDK_PROJECT_NAME} PRIVATE -Wl,--start-group)
+TARGET_LINK_LIBRARIES(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    -Wl,--start-group
+)
 
-target_link_libraries(${MCUX_SDK_PROJECT_NAME} PRIVATE ${TARGET_LINK_SYSTEM_LIBRARIES})
+target_link_libraries(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    ${TARGET_LINK_SYSTEM_LIBRARIES}
+)
 
-target_link_libraries(${MCUX_SDK_PROJECT_NAME} PRIVATE ${MICROEJ_DEST}${MICROEJ_DEST_LIB}/microejruntime.a)
+target_link_libraries(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    ${MICROEJ_DEST}${MICROEJ_DEST_LIB}/microejruntime.a
+)
 
-target_link_libraries(${MCUX_SDK_PROJECT_NAME} PRIVATE ${MICROEJ_DEST}${MICROEJ_DEST_LIB}/microejapp.o)
+target_link_libraries(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    ${MICROEJ_DEST}${MICROEJ_DEST_LIB}/microejapp.o
+)
 
-TARGET_LINK_LIBRARIES(${MCUX_SDK_PROJECT_NAME} PRIVATE -Wl,--end-group)
+TARGET_LINK_LIBRARIES(
+    ${MCUX_SDK_PROJECT_NAME}
+    PRIVATE
+    -Wl,--end-group
+)
 
-add_custom_command(TARGET ${MCUX_SDK_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_OBJCOPY} -Obinary ./${MCUX_SDK_PROJECT_NAME} ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.bin)
-add_custom_command(TARGET ${MCUX_SDK_PROJECT_NAME} POST_BUILD COMMAND ${CMAKE_OBJCOPY} -Oihex ./${MCUX_SDK_PROJECT_NAME} ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.hex)
+add_custom_command(
+    TARGET ${MCUX_SDK_PROJECT_NAME}
+    POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY}
+    -Obinary
+    ./${MCUX_SDK_PROJECT_NAME}
+    ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.bin
+)
 
-set_target_properties(${MCUX_SDK_PROJECT_NAME} PROPERTIES ADDITIONAL_CLEAN_FILES ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.bin)
-set_target_properties(${MCUX_SDK_PROJECT_NAME} PROPERTIES ADDITIONAL_CLEAN_FILES ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.hex)
+add_custom_command(
+    TARGET ${MCUX_SDK_PROJECT_NAME}
+    POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY}
+    -Oihex
+    ./${MCUX_SDK_PROJECT_NAME}
+    ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.hex
+)
+
+set_target_properties(
+    ${MCUX_SDK_PROJECT_NAME}
+    PROPERTIES
+    ADDITIONAL_CLEAN_FILES ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.bin
+)
+
+set_target_properties(
+    ${MCUX_SDK_PROJECT_NAME}
+    PROPERTIES
+    ADDITIONAL_CLEAN_FILES ./${MCUX_SDK_PROJECT_NAME_NO_EXT}.hex
+)

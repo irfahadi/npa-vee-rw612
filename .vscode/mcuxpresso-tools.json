@@ -1,18 +1,8 @@
 {
-  "version": "24.9",
+  "version": "25.3",
   "toolchainPath": "${env:ARMGCC_DIR}",
   "linkedProjects": [],
   "trustZoneType": "none",
   "multicoreType": "none",
-  "debug": {
-    "linkserver": {
-      "device": "RW612:FRDM-RW612",
-      "core": "cm33_nodsp"
-    },
-    "segger": {
-      "device": "RW612",
-      "core": "Cortex-M33"
-    }
-  },
   "projectType": "cmake-freestanding"
 }

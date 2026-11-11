@@ -18,7 +18,17 @@
       "probeSerialNumber": "",
       "isAttach": false,
       "probeType": "",
-      "showDevDebugOutput": "none"
+      "showDevDebugOutput": "none",
+      "gdbServerConfigs": {
+        "linkserver": {
+          "device": "RW612:FRDM-RW612",
+          "core": "cm33_nodsp"
+        },
+        "segger": {
+          "device": "RW612",
+          "core": "Cortex-M33"
+        }
+      }
     }
   ]
 }

@@ -9,6 +9,7 @@
 #define _DISPLAY_SUPPORT_H_
 
 #include "panel_func.h"
+#include "fsl_i2c.h"
 /*******************************************************************************
  * API
  ******************************************************************************/
@@ -34,6 +35,9 @@ void disp_sup_disp_init(void);
 void disp_sup_indev_init(void);
 void disp_sup_flush(uint8_t* srcAddr, uint32_t startX, uint32_t startY, uint32_t endX, uint32_t endY, uint32_t number_pixel);
 uint8_t* disp_sup_get_fb_address();
+
+status_t BSP_I2C2_InitShared(void);
+status_t BSP_I2C2_MasterTransfer(i2c_master_transfer_t *transfer);
 
 void DEMO_InitTouch(void);
 void DEMO_ReadTouch(int *pressed, int *touch_x, int *touch_y);

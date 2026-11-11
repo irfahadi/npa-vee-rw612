@@ -72,9 +72,11 @@
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 /* this is the basic need */
 #define configBASE_HEAP_SIZE                   ((size_t)(33 * 1024))
-#define configNET_HEAP_SIZE                    ((size_t)(14 * 1024))
+//#define configNET_HEAP_SIZE                    ((size_t)(14 * 1024)) aslinya
+#define configNET_HEAP_SIZE ((size_t)(32 * 1024))
 #ifdef ENABLE_WIFI
-#define configWIFI_HEAP_SIZE                   ((size_t)(21 * 1024))
+//#define configWIFI_HEAP_SIZE                   ((size_t)(21 * 1024)) aslinya
+#define configWIFI_HEAP_SIZE ((size_t)(48 * 1024))
 #else
 #define configWIFI_HEAP_SIZE                   ((size_t)(0))
 #endif
@@ -86,7 +88,7 @@
 /* Hook function related definitions. */
 #define configUSE_IDLE_HOOK                     1
 #define configUSE_TICK_HOOK                     0
-#define configCHECK_FOR_STACK_OVERFLOW          0
+#define configCHECK_FOR_STACK_OVERFLOW          2
 #define configUSE_MALLOC_FAILED_HOOK            1
 #define configUSE_DAEMON_TASK_STARTUP_HOOK      0
 
@@ -120,7 +122,7 @@
 #define INCLUDE_vTaskDelay                      1
 #define INCLUDE_xTaskGetSchedulerState          1
 #define INCLUDE_xTaskGetCurrentTaskHandle       1
-#define INCLUDE_uxTaskGetStackHighWaterMark     0
+#define INCLUDE_uxTaskGetStackHighWaterMark     1
 #define INCLUDE_xTaskGetIdleTaskHandle          1
 #define INCLUDE_eTaskGetState                   1
 #define INCLUDE_xTimerPendFunctionCall          1

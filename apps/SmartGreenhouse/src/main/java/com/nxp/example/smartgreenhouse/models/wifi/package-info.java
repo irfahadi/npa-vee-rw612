@@ -1,0 +1,1 @@
+package com.nxp.example.smartgreenhouse.models.wifi;

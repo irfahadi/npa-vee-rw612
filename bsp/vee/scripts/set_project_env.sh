@@ -9,7 +9,7 @@
 # Change the following variables according to your project
 
 # Set 1 for RELEASE mode and 0 for DEBUG mode
-export CHOSEN_MODE=1
+export CHOSEN_MODE=0
 
 # Set "flash_cmsisdap" for Linkserver probe or "flash" for J-Link probe
 export CHOSEN_PROBE=flash

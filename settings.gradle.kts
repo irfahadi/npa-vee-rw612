@@ -1,6 +1,6 @@
 rootProject.name = "npa-rw612-frdm"
 include("vee-port", "vee-port:front-panel", "vee-port:mock", "vee-port:image-generator")
-include("apps:simpleGFX", "apps:HelloWorld")
+include("apps:simpleGFX", "apps:HelloWorld", "apps:SmartGreenhouse")
 
 project(":vee-port:front-panel").projectDir = file("vee-port/extensions/front-panel")
 project(":vee-port:mock").projectDir = file("vee-port/mock")

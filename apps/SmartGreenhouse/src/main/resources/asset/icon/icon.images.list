@@ -1,0 +1,32 @@
+# Header
+/asset/icon/WifiIcon16.png:ARGB4444
+/asset/icon/WifiSlashIcon16.png:ARGB4444
+/asset/icon/LockIcon5.png:ARGB4444
+
+# Sensor Card & Menu
+/asset/icon/NitrogenIcon32.png:ARGB4444
+/asset/icon/FosforIcon32.png:ARGB4444
+/asset/icon/KaliumIcon32.png:ARGB4444
+/asset/icon/KelembapanTanahIcon32.png:ARGB4444
+/asset/icon/PHTanahIcon32.png:ARGB4444
+/asset/icon/SuhuTanahIcon32.png:ARGB4444
+/asset/icon/SalinitasTanahIcon32.png:ARGB4444
+/asset/icon/SuhuUdaraIcon32.png:ARGB4444
+/asset/icon/KelembapanUdaraIcon32.png:ARGB4444
+/asset/icon/IntensitasCahayaIcon32.png:ARGB4444
+/asset/icon/SwipeUpIcon24.png:ARGB4444
+
+# Menu Actuator
+/asset/icon/PompaAirIcon32.png:ARGB4444
+/asset/icon/KatupAirIcon32.png:ARGB4444
+
+# Footer
+/asset/icon/SwipeUpIcon24.png:ARGB4444
+
+# Detail Actuator
+/asset/icon/PompaAirIcon64.png:ARGB4444
+/asset/icon/KatupAirIcon64.png:ARGB4444
+/asset/icon/BackIcon24.png:ARGB4444
+/asset/icon/TimerIcon32.png:ARGB4444
+/asset/icon/KalenderIcon48.png:ARGB4444
+/asset/icon/SettingIcon48.png:ARGB4444

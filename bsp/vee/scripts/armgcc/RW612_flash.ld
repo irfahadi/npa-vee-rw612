@@ -45,7 +45,10 @@ MEMORY
   m_mbox2               (RW) : ORIGIN = 0x443C0000, LENGTH = 0x00000488
   m_txq23               (RW) : ORIGIN = 0x443C0488, LENGTH = 0x00001080
   m_txq32               (RW) : ORIGIN = 0x443C1508, LENGTH = 0x00001080
+  m_mflash              (RX) : ORIGIN = 0x0BFF0000, LENGTH = 0x00010000
 }
+
+PROVIDE(__MFLASH_FS_START = ORIGIN(m_mflash));
 
 /* Define output sections */
 SECTIONS
@@ -75,10 +78,10 @@ SECTIONS
   .text :
   {
     . = ALIGN(4);
-    *(.text)                 /* .text sections (code) */
-    *(.text*)                /* .text* sections (code) */
-    *(.rodata)               /* .rodata sections (constants, strings, etc.) */
-    *(.rodata*)              /* .rodata* sections (constants, strings, etc.) */
+    *(EXCLUDE_FILE(*mflash_drv.c.obj *fsl_flexspi.c.obj) .text)
+    *(EXCLUDE_FILE(*mflash_drv.c.obj *fsl_flexspi.c.obj) .text*)
+    *(EXCLUDE_FILE(*mflash_drv.c.obj *fsl_flexspi.c.obj) .rodata)
+    *(EXCLUDE_FILE(*mflash_drv.c.obj *fsl_flexspi.c.obj) .rodata*)
     *(.glue_7)               /* glue arm to thumb code */
     *(.glue_7t)              /* glue thumb to arm code */
     *(.eh_frame)
@@ -181,6 +184,8 @@ SECTIONS
     __data_start__ = .;      /* create a global symbol at data start */
     *(CodeQuickAccess)       /* CodeQuickAccess sections */
     *(DataQuickAccess)       /* DataQuickAccess sections */
+    *mflash_drv.c.obj(.text .text* .rodata .rodata*)
+    *fsl_flexspi.c.obj(.text .text* .rodata .rodata*)
     *(.data)                 /* .data sections */
     *(.data*)                /* .data* sections */
     KEEP(*(.jcr*))
