@@ -6,6 +6,7 @@ import com.nxp.example.smartgreenhouse.models.sensor.SensorData;
 import com.nxp.example.smartgreenhouse.models.sensor.SensorDataStore;
 import com.nxp.example.smartgreenhouse.models.sensor.SensorHistoryEntry;
 import com.nxp.example.smartgreenhouse.models.sensor.SensorHistoryStore;
+import com.nxp.example.smartgreenhouse.services.mqtt.MqttSubscribeService;
 import com.nxp.example.smartgreenhouse.utils.Time;
 
 import ej.microui.MicroUI;
@@ -28,6 +29,8 @@ public final class LoRaHardwareService {
 
     private int lastSequence;
 
+    private MqttSubscribeService mqttSubscribeService;
+
     public LoRaHardwareService(SensorDataStore sensorDataStore, SensorHistoryStore sensorHistoryStore, OverviewController overviewController, SensorDetailController sensorDetailController) {
         if (sensorDataStore == null) throw new NullPointerException("sensorDataStore tidak boleh null.");
         if (sensorHistoryStore == null) throw new NullPointerException("sensorHistoryStore tidak boleh null.");
@@ -40,6 +43,10 @@ public final class LoRaHardwareService {
         this.sensorDetailController = sensorDetailController;
         this.snapshot = new int[LoRaNative.SNAPSHOT_SIZE];
         this.lastSequence = -1;
+    }
+
+    public void setMqttSubscribeService(MqttSubscribeService mqttSubscribeService) {
+        this.mqttSubscribeService = mqttSubscribeService;
     }
 
     public void poll() {
@@ -63,6 +70,11 @@ public final class LoRaHardwareService {
         final String fullTime = Time.formatJakartaDateTime(receivedTimestamp);
         final int packetSequence = sequence;
         final int packetRssi = this.snapshot[LoRaNative.INDEX_RSSI];
+
+        // telemetry/env: Sensor LoRa -> Sink Node -> Cloud
+        if (this.mqttSubscribeService != null) {
+            this.mqttSubscribeService.publishTelemetry(sensorData, packetSequence, packetRssi, receivedTimestamp);
+        }
 
         MicroUI.callSerially(
                 new Runnable() {
