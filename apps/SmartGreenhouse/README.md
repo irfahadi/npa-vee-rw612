@@ -31,3 +31,14 @@ Notes:
   sends the OFF command itself after `dur_s` seconds. The Unit Kontrol keeps its existing protocol and
   still reports its state on `gh01/node/255/status/valve<n>` (and `.../status/pump`).
 - Messages are only published while MQTT is connected; nothing is buffered while offline.
+
+# Scenario test (laptop as Cloud, Collaboration Agent and Unit Kontrol)
+
+`scripts/mqtt_scenario_test.py` (Python 3.9+, `python3 -m pip install paho-mqtt`) runs, against the
+deployed Sink Node: 4 virtual sink nodes sending `telemetry/env` at the same time, one robot (RB01)
+inspection mission relayed through the Sink Node, and pump ON/OFF tests (auto-OFF with `dur_s` and
+manual ON then OFF). All messages and a PASS/FAIL summary with latencies are saved in `results/<timestamp>/`.
+
+```bash
+python3 scripts/mqtt_scenario_test.py --broker <broker-ip>
+```

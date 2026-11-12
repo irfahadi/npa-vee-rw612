@@ -63,3 +63,6 @@ CMakePresets.json.inc
 bsp/vee/lib/
 bsp/vee/inc/
 .preset.gen
+
+# Hasil skrip uji MQTT
+results/
