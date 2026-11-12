@@ -51,6 +51,7 @@ public class AppController {
         this.mqttSubscribeService = new MqttSubscribeService(this.actuatorDataStore, this.actuatorDetailController);
 
         this.actuatorDetailController.setMqttSubscribeService(this.mqttSubscribeService);
+        this.loRaHardwareService.setMqttSubscribeService(this.mqttSubscribeService);
 
         this.headerController.setPeriodicTask(
                 new Runnable() {
