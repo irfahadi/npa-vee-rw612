@@ -4,6 +4,8 @@ import com.nxp.example.smartgreenhouse.models.wifi.WifiCredentials;
 import com.nxp.example.smartgreenhouse.models.wifi.WifiProvisioningState;
 import com.nxp.example.smartgreenhouse.views.wifi.WifiPortalView;
 
+import com.nxp.example.smartgreenhouse.services.mqtt.BrokerConfig;
+
 import ej.ecom.wifi.AccessPoint;
 import ej.ecom.wifi.WifiCapability;
 import ej.bon.Util;
@@ -60,6 +62,7 @@ public final class WifiProvisioningService {
 
     private volatile String submittedProvisioningSsid;
     private volatile String submittedProvisioningPassword;
+    private volatile String submittedProvisioningBroker;
 
     private WifiCredentials connectedCredentials;
     private WifiCredentials previousConnectedCredentials;
@@ -332,6 +335,7 @@ public final class WifiProvisioningService {
         AccessPoint[] accessPoints = null;
         String targetSsid = null;
         String targetPassword = null;
+        String targetBroker = null;
         String failureMessage = null;
         boolean credentialsSubmitted = false;
 
@@ -378,6 +382,7 @@ public final class WifiProvisioningService {
                 } else {
                     targetSsid = this.submittedProvisioningSsid;
                     targetPassword = this.submittedProvisioningPassword;
+                    targetBroker = this.submittedProvisioningBroker;
 
                     setState(WifiProvisioningState.CONNECTING);
                     notifyConnecting(targetSsid);
@@ -445,6 +450,12 @@ public final class WifiProvisioningService {
                 this.credentialStore.save(persistedCredentials);
 
                 LOGGER.log(Level.INFO, "Provisioned WiFi credentials persisted | SSID=" + targetSsid);
+
+                try {
+                    this.credentialStore.saveBrokerAddress(targetBroker);
+                } catch (RuntimeException brokerException) {
+                    LOGGER.log(Level.WARNING, "Unable to persist MQTT broker address | broker=" + targetBroker + " | error=" + brokerException);
+                }
             } catch (RuntimeException exception) {
                 connected = false;
                 failureMessage = "Wi-Fi berhasil terhubung tetapi credential tidak dapat disimpan.";
@@ -638,7 +649,12 @@ public final class WifiProvisioningService {
 
                             setProvisioningHtmlResponse(
                                     response,
-                                    WifiPortalView.buildPasswordPage(accessPoint.getSSID(), accessPoint.getRSSI())
+                                    WifiPortalView.buildPasswordPage(
+                                            accessPoint.getSSID(),
+                                            accessPoint.getRSSI(),
+                                            loadStoredBrokerAddress(),
+                                            BrokerConfig.DEFAULT_BROKER_ADDRESS
+                                    )
                             );
                         } catch (IOException exception) {
                             LOGGER.log(Level.WARNING, "Unable to process provisioning network selection | error=" + exception);
@@ -697,6 +713,17 @@ public final class WifiProvisioningService {
                                 return;
                             }
 
+                            String brokerInput = parameters.get("broker");
+                            String broker = BrokerConfig.normalize(brokerInput);
+
+                            if (brokerInput != null && brokerInput.trim().length() > 0 && broker == null) {
+                                setProvisioningHtmlResponse(
+                                        response,
+                                        WifiPortalView.buildErrorPage("Broker tidak valid", "Isi alamat broker MQTT seperti 192.168.1.23 atau 192.168.1.23:1883, atau kosongkan untuk broker bawaan.")
+                                );
+                                return;
+                            }
+
                             if (WifiProvisioningService.this.provisioningCredentialsSubmitted) {
                                 setProvisioningHtmlResponse(response, WifiPortalView.buildConnectingPage(ssid));
                                 return;
@@ -706,9 +733,10 @@ public final class WifiProvisioningService {
 
                             WifiProvisioningService.this.submittedProvisioningSsid = ssid;
                             WifiProvisioningService.this.submittedProvisioningPassword = password;
+                            WifiProvisioningService.this.submittedProvisioningBroker = broker;
                             WifiProvisioningService.this.provisioningCredentialsSubmitted = true;
 
-                            LOGGER.log(Level.INFO, "Provisioning credentials queued | SSID=" + ssid + " | passwordLength=" + password.length());
+                            LOGGER.log(Level.INFO, "Provisioning credentials queued | SSID=" + ssid + " | passwordLength=" + password.length() + " | broker=" + (broker == null ? "(default)" : broker));
                         } catch (IOException exception) {
                             LOGGER.log(Level.WARNING, "Unable to process provisioning credentials | error=" + exception);
 
@@ -774,6 +802,7 @@ public final class WifiProvisioningService {
         this.provisioningCredentialsSubmitted = false;
         this.submittedProvisioningSsid = null;
         this.submittedProvisioningPassword = null;
+        this.submittedProvisioningBroker = null;
     }
 
     private void setProvisioningHtmlResponse(HttpResponse response, String page) {
@@ -810,6 +839,15 @@ public final class WifiProvisioningService {
         }
 
         return count;
+    }
+
+    private String loadStoredBrokerAddress() {
+        try {
+            return this.credentialStore.loadBrokerAddress();
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Unable to read stored MQTT broker address | error=" + exception);
+            return null;
+        }
     }
 
     private static boolean isPasswordValid(String password) {

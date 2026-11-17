@@ -37,6 +37,15 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
 
     private static final int STORAGE_VERSION = 1;
 
+    // Optional MQTT broker block, placed after the space reserved for all WiFi entries so the
+    // WiFi entry layout (and older firmware reading it) is unaffected.
+    // Layout: [marker 'B'][length][address bytes (max 64)]
+    private static final int BROKER_BLOCK_OFFSET = HEADER_SIZE + (MAX_SAVED_NETWORKS * ENTRY_SIZE);
+    private static final int BROKER_LENGTH_OFFSET = BROKER_BLOCK_OFFSET + 1;
+    private static final int BROKER_DATA_OFFSET = BROKER_BLOCK_OFFSET + 2;
+    private static final byte BROKER_MARKER = 'B';
+    private static final int MAX_BROKER_BYTES = 64;
+
     @Override
     public int getMaxSavedNetworks() {
         return MAX_SAVED_NETWORKS;
@@ -86,15 +95,61 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
         WifiCredentials[] stored = new WifiCredentials[count];
         System.arraycopy(next, 0, stored, 0, count);
 
-        persist(stored);
+        persist(stored, readBrokerInternal());
 
         LOGGER.log(Level.INFO, "WiFi credentials saved | SSID=" + credentials.getSsid() + " | stored=" + count);
     }
 
     @Override
     public synchronized void clear() {
-        persist(new WifiCredentials[0]);
+        persist(new WifiCredentials[0], readBrokerInternal());
         LOGGER.log(Level.INFO, "Stored WiFi credentials cleared");
+    }
+
+    @Override
+    public synchronized String loadBrokerAddress() {
+        return readBrokerInternal();
+    }
+
+    @Override
+    public synchronized void saveBrokerAddress(String brokerAddress) {
+        String address = brokerAddress == null ? "" : brokerAddress.trim();
+
+        if (encodeUtf8(address).length > MAX_BROKER_BYTES) {
+            throw new IllegalArgumentException("Alamat broker maksimal 64 byte.");
+        }
+
+        persist(readAllInternal(), address.length() == 0 ? null : address);
+
+        LOGGER.log(Level.INFO, "MQTT broker address saved | broker=" + (address.length() == 0 ? "(default)" : address));
+    }
+
+    private String readBrokerInternal() {
+        byte[] storage = new byte[STORAGE_BUFFER_SIZE];
+        int storedLength = WifiCredentialNative.readNative(storage);
+
+        if (storedLength < BROKER_DATA_OFFSET || !isHeaderValid(storage)) {
+            return null;
+        }
+
+        if (storage[BROKER_BLOCK_OFFSET] != BROKER_MARKER) {
+            return null;
+        }
+
+        int length = unsigned(storage[BROKER_LENGTH_OFFSET]);
+
+        if (length <= 0 || length > MAX_BROKER_BYTES || BROKER_DATA_OFFSET + length > storedLength) {
+            return null;
+        }
+
+        byte[] addressBytes = new byte[length];
+        System.arraycopy(storage, BROKER_DATA_OFFSET, addressBytes, 0, length);
+
+        try {
+            return new String(addressBytes, "UTF-8");
+        } catch (UnsupportedEncodingException exception) {
+            throw new IllegalStateException("UTF-8 tidak tersedia: " + exception);
+        }
     }
 
     private WifiCredentials[] readAllInternal() {
@@ -172,7 +227,7 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
         return result;
     }
 
-    private void persist(WifiCredentials[] credentials) {
+    private void persist(WifiCredentials[] credentials, String brokerAddress) {
         byte[] storage = new byte[STORAGE_BUFFER_SIZE];
 
         storage[0] = MAGIC_0;
@@ -187,6 +242,15 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
         }
 
         int length = HEADER_SIZE + (credentials.length * ENTRY_SIZE);
+
+        if (brokerAddress != null && brokerAddress.length() > 0) {
+            byte[] brokerBytes = encodeUtf8(brokerAddress);
+
+            storage[BROKER_BLOCK_OFFSET] = BROKER_MARKER;
+            storage[BROKER_LENGTH_OFFSET] = (byte) brokerBytes.length;
+            System.arraycopy(brokerBytes, 0, storage, BROKER_DATA_OFFSET, brokerBytes.length);
+            length = BROKER_DATA_OFFSET + brokerBytes.length;
+        }
 
         if (!WifiCredentialNative.writeNative(storage, length)) {
             throw new IllegalStateException("Gagal menyimpan credential Wi-Fi ke flash.");

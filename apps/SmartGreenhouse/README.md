@@ -6,6 +6,21 @@ The Sink Node receives sensor data over LoRa and exchanges data with the cloud, 
 Collaboration Agent and the Unit Kontrol over WiFi / Internet using MQTT
 (`services/mqtt/MqttSubscribeService.java`).
 
+# MQTT broker address (set from the phone)
+
+The broker is no longer hard-coded. It is entered on the WiFi provisioning portal:
+
+1. On the board, open WiFi provisioning; the board starts the `smartgreenhouse` hotspot and shows a QR code.
+2. Connect the phone to that hotspot and open `http://192.168.1.1/`.
+3. Pick the WiFi network. The password page has a **Broker MQTT** field: enter `192.168.1.23` or
+   `192.168.1.23:1883` (the field shows the currently stored broker).
+4. Press Connect. After the WiFi connects, the broker is saved in flash with the WiFi credentials and MQTT
+   reconnects to it. It stays in use after a reboot.
+
+Leave the field empty to use the built-in default `168.110.214.70:1883` (`BrokerConfig.DEFAULT_BROKER_ADDRESS`).
+To change only the broker, run WiFi provisioning again with the same network. The broker block is stored after the
+WiFi entries in the existing 512-byte credential storage, so previously saved WiFi credentials remain valid.
+
 # Message schema and data contract (MQTT over WiFi)
 
 All collaboration payloads are flat JSON objects. Broker, topics, QoS and size limits are
@@ -31,3 +46,14 @@ Notes:
   sends the OFF command itself after `dur_s` seconds. The Unit Kontrol keeps its existing protocol and
   still reports its state on `gh01/node/255/status/valve<n>` (and `.../status/pump`).
 - Messages are only published while MQTT is connected; nothing is buffered while offline.
+
+# Scenario test (laptop as Cloud, Collaboration Agent and Unit Kontrol)
+
+`scripts/mqtt_scenario_test.py` (Python 3.9+, `python3 -m pip install paho-mqtt`) runs, against the
+deployed Sink Node: 4 virtual sink nodes sending `telemetry/env` at the same time, one robot (RB01)
+inspection mission relayed through the Sink Node, and pump ON/OFF tests (auto-OFF with `dur_s` and
+manual ON then OFF). All messages and a PASS/FAIL summary with latencies are saved in `results/<timestamp>/`.
+
+```bash
+python3 scripts/mqtt_scenario_test.py --broker <broker-ip>
+```
