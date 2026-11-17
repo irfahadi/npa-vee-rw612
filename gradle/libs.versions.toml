@@ -19,7 +19,7 @@ api-ssl =               { group = "ej.api", name = "ssl", version = "2.2.1" }
 api-trace =             { group = "ej.api", name = "trace", version = "1.1.1" }
 
 # Architecture
-architecture = { group = "com.microej.architecture.CM4.CM4hardfp_GCC48", name = "flopi4G25", version = "8.1.0" }
+architecture = { group = "com.microej.architecture.CM4.CM4hardfp_GCC48", name = "flopi4G25", version = "8.2.0" }
 
 # Packs
 pack-ui-architecture =  { group = "com.microej.architecture.CM4.CM4hardfp_GCC48", name = "flopi4G25-ui-pack", version.ref = "pack-ui" }
