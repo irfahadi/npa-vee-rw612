@@ -73,7 +73,7 @@ public final class WifiPortalView {
         return html.toString();
     }
 
-    public static String buildPasswordPage(String ssid, float rssi) {
+    public static String buildPasswordPage(String ssid, float rssi, String brokerAddress, String defaultBrokerAddress) {
         String safeSsid = escapeHtml(ssid);
         StringBuilder html = new StringBuilder(4096);
 
@@ -92,6 +92,15 @@ public final class WifiPortalView {
         html.append("'>");
         html.append("<label class='field-label' for='password'>Password</label>");
         html.append("<input class='password' id='password' name='password' type='password' maxlength='64' placeholder='Masukkan password Wi-Fi'>");
+        html.append("<label class='field-label' for='broker'>Broker MQTT (IP atau IP:port)</label>");
+        html.append("<input class='password' id='broker' name='broker' type='text' maxlength='64' autocapitalize='off' autocorrect='off' value='");
+        html.append(escapeHtml(brokerAddress == null ? "" : brokerAddress));
+        html.append("' placeholder='");
+        html.append(escapeHtml(defaultBrokerAddress == null ? "" : defaultBrokerAddress));
+        html.append("'>");
+        html.append("<p class='description'>Kosongkan untuk memakai broker bawaan ");
+        html.append(escapeHtml(defaultBrokerAddress == null ? "" : defaultBrokerAddress));
+        html.append(".</p>");
         html.append("<button class='button' type='submit'>Connect</button>");
         html.append("</form>");
         html.append("<a class='back' href='/scan'>Kembali</a>");

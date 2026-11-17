@@ -21,7 +21,7 @@ public final class MqttSubscribeService {
 
     private static final Logger LOGGER = Logger.getLogger("[SMART GREENHOUSE: MQTT SUBSCRIBE SERVICE]");
 
-    private static final String BROKER_URI = "tcp://168.110.214.70:1883";
+    // The broker address is provisioned from the WiFi portal; see BrokerConfig (default 168.110.214.70:1883).
     private static final String CLIENT_ID = "clientku";
     private static final String TOPIC_FILTER = "gh01/node/255/status/+";
     private static final int SUBSCRIBE_QOS = 0;
@@ -78,6 +78,7 @@ public final class MqttSubscribeService {
     private final ActuatorDetailController actuatorDetailController;
 
     private MqttClient mqttClient;
+    private String brokerUri;
     private boolean workerStarted;
     private volatile boolean serviceRunning;
     private volatile boolean subscribed;
@@ -288,6 +289,7 @@ public final class MqttSubscribeService {
 
         if (client == null || !client.isConnected()) {
             LOGGER.log(Level.INFO, "MQTT paused for WiFi provisioning | client is not connected.");
+            discardClientForBrokerReload();
             return;
         }
 
@@ -296,7 +298,15 @@ public final class MqttSubscribeService {
             LOGGER.log(Level.INFO, "MQTT disconnected for WiFi provisioning.");
         } catch (MqttException exception) {
             LOGGER.log(Level.WARNING, "MQTT disconnect during WiFi provisioning failed | reasonCode=" + exception.getReasonCode() + " | message=" + exception.getMessage());
+        } finally {
+            discardClientForBrokerReload();
         }
+    }
+
+    /** Drops the client so it is recreated with the (possibly new) provisioned broker address. */
+    private synchronized void discardClientForBrokerReload() {
+        this.mqttClient = null;
+        this.subscribed = false;
     }
 
     private void waitWhileProvisioningPaused() throws InterruptedException {
@@ -328,7 +338,8 @@ public final class MqttSubscribeService {
             return;
         }
 
-        this.mqttClient = new MqttClient(BROKER_URI, CLIENT_ID);
+        this.brokerUri = BrokerConfig.loadBrokerUri();
+        this.mqttClient = new MqttClient(this.brokerUri, CLIENT_ID);
 
         this.mqttClient.setCallback(
                 new MqttCallback() {
@@ -395,7 +406,7 @@ public final class MqttSubscribeService {
         }
 
         if (!client.isConnected()) {
-            LOGGER.log(Level.INFO, "Connecting to MQTT broker | URI=" + BROKER_URI + " | clientId=" + CLIENT_ID);
+            LOGGER.log(Level.INFO, "Connecting to MQTT broker | URI=" + this.brokerUri + " | clientId=" + CLIENT_ID);
 
             MqttConnectOptions connectOptions = new MqttConnectOptions();
             connectOptions.setConnectionTimeout(10);
@@ -418,7 +429,7 @@ public final class MqttSubscribeService {
                 return;
             }
 
-            LOGGER.log(Level.INFO, "MQTT broker connected | URI=" + BROKER_URI);
+            LOGGER.log(Level.INFO, "MQTT broker connected | URI=" + this.brokerUri);
         }
 
         if (!this.subscribed && !this.provisioningPaused) {
