@@ -21,4 +21,10 @@ public interface WifiCredentialStore {
 
     /** Stores the MQTT broker address ("host:port"); null or empty removes it. */
     void saveBrokerAddress(String brokerAddress);
+
+    /** Returns the optional local/edge MQTT broker address ("host:port"), or null for single-broker mode. */
+    String loadEdgeBrokerAddress();
+
+    /** Stores the optional local/edge MQTT broker address ("host:port"); null or empty removes it. */
+    void saveEdgeBrokerAddress(String edgeBrokerAddress);
 }

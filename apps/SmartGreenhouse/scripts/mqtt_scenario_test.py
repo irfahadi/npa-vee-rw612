@@ -58,6 +58,9 @@ TOPIC_ACTUATOR_CONTROL = "gh01/actuator/control"
 TOPIC_PUMP_CONTROL = "gh01/node/255/control/pump"
 TOPIC_PUMP_STATUS = "gh01/node/255/status/pump"
 TOPIC_UNIT_CONTROL_FILTER = "gh01/node/255/control/+"
+TOPIC_SYS_DIAG = "gh01/sys/diag"
+TOPIC_STRESS_IN = "gh01/stress/load"
+TOPIC_STRESS_OUT = "gh01/stress/load/out"
 
 # Batas ukuran payload sesuai kontrak data (byte).
 MAX_BYTES = {
@@ -330,6 +333,7 @@ class RobotAgent:
         self.mission_started.set()
         self.recorder.log("Robot {} mulai misi {} | trays={}".format(self.robot_id, mission_id, trays))
         total = max(1, len(trays))
+        self._publish_status(mission_id, "ACCEPTED", trays[0] if trays else 0, 0)
 
         for index, tray in enumerate(trays):
             tray_start = time.monotonic()
@@ -341,7 +345,7 @@ class RobotAgent:
                 time.sleep(self.args.status_interval)
 
             self.battery = max(0, self.battery - 1)
-            label = self.rng.choice(["BAGUS", "BAGUS", "BAGUS", "BURUK"])
+            label = self.rng.choice(["BAGUS", "BAGUS", "BAGUS", "TIDAK_BAGUS"])
             self.result_seq += 1
             self.actor.publish(TOPIC_AGENT_RESULT, {
                 "m_id": mission_id,
@@ -349,12 +353,12 @@ class RobotAgent:
                 "tray_id": tray,
                 "label": label,
                 "conf": round(self.rng.uniform(0.80, 0.99), 2),
-                "anom": 1 if label == "BURUK" else 0,
+                "anom": 1 if label == "TIDAK_BAGUS" else 0,
                 "seq": self.result_seq,
-                "ts": int(time.time()),
+                "ts": int(time.time() * 1000),
             })
 
-        self._publish_status(mission_id, "DONE", trays[-1] if trays else 0, 100)
+        self._publish_status(mission_id, "COMPLETED", trays[-1] if trays else 0, 100)
         self.recorder.log("Robot {} selesai misi {}".format(self.robot_id, mission_id))
 
         with self.lock:
@@ -669,6 +673,13 @@ def evaluate(rows, markers, sinks, args):
     add("Status pompa dari Unit Kontrol",
         INFO, "{} pesan status/pump{}".format(
             len(pump_status), " (Unit Kontrol simulasi aktif)" if not args.no_unit_sim else ""))
+
+    diag_msgs = [r for r in monitor_rx if r["topic"] == TOPIC_SYS_DIAG]
+    metrics["sys_diag"] = {"count": len(diag_msgs), "latest": diag_msgs[-1]["payload"] if diag_msgs else None}
+    add("Diagnostik Sink Node (sys/diag)",
+        PASS if diag_msgs else INFO,
+        "{} pesan sys/diag diterima{}".format(
+            len(diag_msgs), " | terakhir: " + diag_msgs[-1]["payload"] if diag_msgs else ""))
 
     relay_ok = metrics["mission_command"]["relayed"] > 0 or metrics["mission_status"]["relayed"] > 0
     if not relay_ok and not pump_rx:

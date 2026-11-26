@@ -259,7 +259,15 @@ static status_t LORA_SpiTransfer(
  * Global / Module variables
  ******************************************************************************/
 
+#define LORA_RX_QUEUE_CAPACITY \
+    16U
+
 static lora_latest_data_t g_loraLatestData = {0};
+static lora_latest_data_t g_loraRxQueue[LORA_RX_QUEUE_CAPACITY] = {0};
+static uint32_t g_loraRxHead = 0U;
+static uint32_t g_loraRxCount = 0U;
+static uint32_t g_loraRxSequence = 0U;
+static uint32_t g_loraRxDropped = 0U;
 
 
 /*******************************************************************************
@@ -321,6 +329,42 @@ bool LORA_CopyLatestData(
     taskEXIT_CRITICAL();
 
     return true;
+}
+
+bool LORA_PopPacket(
+    lora_latest_data_t *destination)
+{
+    if (destination == NULL)
+    {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+
+    if (g_loraRxCount == 0U)
+    {
+        taskEXIT_CRITICAL();
+        return false;
+    }
+
+    *destination = g_loraRxQueue[g_loraRxHead];
+    g_loraRxHead = (g_loraRxHead + 1U) % LORA_RX_QUEUE_CAPACITY;
+    g_loraRxCount--;
+
+    taskEXIT_CRITICAL();
+
+    return true;
+}
+
+uint32_t LORA_GetDroppedCount(void)
+{
+    uint32_t dropped;
+
+    taskENTER_CRITICAL();
+    dropped = g_loraRxDropped;
+    taskEXIT_CRITICAL();
+
+    return dropped;
 }
 
 /*******************************************************************************
@@ -920,10 +964,25 @@ static bool LORA_SaveLatestPayload(
     g_loraLatestData.snr_quarter_db =
         snrQuarterDb;
 
-    g_loraLatestData.sequence++;
+    g_loraRxSequence++;
+    g_loraLatestData.sequence =
+        g_loraRxSequence;
 
     g_loraLatestData.available =
         true;
+
+    if (g_loraRxCount >= LORA_RX_QUEUE_CAPACITY)
+    {
+        g_loraRxHead = (g_loraRxHead + 1U) % LORA_RX_QUEUE_CAPACITY;
+        g_loraRxCount--;
+        g_loraRxDropped++;
+    }
+
+    {
+        uint32_t tail = (g_loraRxHead + g_loraRxCount) % LORA_RX_QUEUE_CAPACITY;
+        g_loraRxQueue[tail] = g_loraLatestData;
+        g_loraRxCount++;
+    }
 
     taskEXIT_CRITICAL();
 

@@ -41,6 +41,16 @@ final class JsonLite {
     }
 
     static int getInt(String json, String key, int defaultValue) {
+        long value = getLong(json, key, Long.MIN_VALUE);
+
+        if (value == Long.MIN_VALUE || value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+            return defaultValue;
+        }
+
+        return (int) value;
+    }
+
+    static long getLong(String json, String key, long defaultValue) {
         int index = findValueStart(json, key);
 
         if (index < 0) {
@@ -64,13 +74,12 @@ final class JsonLite {
                 break;
             }
 
-            value = value * 10L + (character - '0');
-            digits++;
-
-            if (value > Integer.MAX_VALUE) {
+            if (value > (Long.MAX_VALUE - (character - '0')) / 10L) {
                 return defaultValue;
             }
 
+            value = value * 10L + (character - '0');
+            digits++;
             index++;
         }
 
@@ -78,7 +87,7 @@ final class JsonLite {
             return defaultValue;
         }
 
-        return (int) (negative ? -value : value);
+        return negative ? -value : value;
     }
 
     /** Returns the index of the first character of the value of the given key, or -1. */

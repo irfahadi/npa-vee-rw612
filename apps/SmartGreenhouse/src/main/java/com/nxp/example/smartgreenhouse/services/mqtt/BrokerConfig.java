@@ -47,6 +47,33 @@ public final class BrokerConfig {
     }
 
     /**
+     * Returns the optional local/edge broker URI (e.g. "tcp://192.168.1.50:1883"),
+     * or null when single-broker mode is used (empty or identical to the primary broker).
+     */
+    public static String loadEdgeBrokerUri(String primaryBrokerUri) {
+        String stored = null;
+
+        try {
+            stored = normalize(new FlashWifiCredentialStore().loadEdgeBrokerAddress());
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Unable to read stored edge broker address | error=" + exception);
+        }
+
+        if (stored == null) {
+            return null;
+        }
+
+        String uri = URI_SCHEME + stored;
+
+        if (uri.equalsIgnoreCase(primaryBrokerUri)) {
+            return null;
+        }
+
+        LOGGER.log(Level.INFO, "Using provisioned edge MQTT broker | address=" + stored);
+        return uri;
+    }
+
+    /**
      * Normalizes user input to "host:port".
      * Accepts "192.168.1.23", "192.168.1.23:1884", "tcp://192.168.1.23:1883" or a hostname.
      *

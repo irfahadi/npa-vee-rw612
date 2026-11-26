@@ -63,15 +63,14 @@
  * Native implementation
  ******************************************************************************/
 
-jboolean
-Java_com_nxp_example_smartgreenhouse_services_lora_LoRaNative_readLatestNative(
+static jboolean
+LORA_CopySnapshotToJava(
+    const lora_latest_data_t *snapshot,
     jint *destination)
 {
-    lora_latest_data_t snapshot;
-
     jint destinationLength;
 
-    if (destination == NULL)
+    if (snapshot == NULL || destination == NULL)
     {
         return JFALSE;
     }
@@ -87,86 +86,107 @@ Java_com_nxp_example_smartgreenhouse_services_lora_LoRaNative_readLatestNative(
         return JFALSE;
     }
 
+    destination[
+        LORA_SNAPSHOT_SEQUENCE_INDEX
+    ] = (jint)snapshot->sequence;
+
+    destination[
+        LORA_SNAPSHOT_NODE_ID_INDEX
+    ] = (jint)snapshot->node_id;
+
+    destination[
+        LORA_SNAPSHOT_NODE_TARGET_INDEX
+    ] = (jint)snapshot->node_target;
+
+    destination[
+        LORA_SNAPSHOT_SOIL_MOISTURE_INDEX
+    ] = (jint)snapshot->soil_moisture;
+
+    destination[
+        LORA_SNAPSHOT_SOIL_TEMPERATURE_INDEX
+    ] = (jint)snapshot->soil_temperature;
+
+    destination[
+        LORA_SNAPSHOT_CONDUCTIVITY_INDEX
+    ] = (jint)snapshot->conductivity;
+
+    destination[
+        LORA_SNAPSHOT_SOIL_PH_INDEX
+    ] = (jint)snapshot->soil_ph;
+
+    destination[
+        LORA_SNAPSHOT_NITROGEN_INDEX
+    ] = (jint)snapshot->nitrogen;
+
+    destination[
+        LORA_SNAPSHOT_PHOSPHORUS_INDEX
+    ] = (jint)snapshot->phosphorus;
+
+    destination[
+        LORA_SNAPSHOT_POTASSIUM_INDEX
+    ] = (jint)snapshot->potassium;
+
+    destination[
+        LORA_SNAPSHOT_AIR_TEMPERATURE_INDEX
+    ] = (jint)snapshot->air_temperature;
+
+    destination[
+        LORA_SNAPSHOT_AIR_HUMIDITY_INDEX
+    ] = (jint)snapshot->air_humidity;
+
+    destination[
+        LORA_SNAPSHOT_LIGHT_INTENSITY_INDEX
+    ] = (jint)snapshot->light_intensity;
+
+    destination[
+        LORA_SNAPSHOT_RSSI_INDEX
+    ] = (jint)snapshot->rssi;
+
+    destination[
+        LORA_SNAPSHOT_SNR_INDEX
+    ] = (jint)snapshot->snr_quarter_db;
+
+    return JTRUE;
+}
+
+jboolean
+Java_com_nxp_example_smartgreenhouse_services_lora_LoRaNative_readLatestNative(
+    jint *destination)
+{
+    lora_latest_data_t snapshot;
+
     if (!LORA_CopyLatestData(
             &snapshot))
     {
         return JFALSE;
     }
 
-    destination[
-        LORA_SNAPSHOT_SEQUENCE_INDEX
-    ] = (jint)snapshot.sequence;
+    return LORA_CopySnapshotToJava(
+        &snapshot,
+        destination
+    );
+}
 
+jboolean
+Java_com_nxp_example_smartgreenhouse_services_lora_LoRaNative_popNextNative(
+    jint *destination)
+{
+    lora_latest_data_t snapshot;
 
-    destination[
-        LORA_SNAPSHOT_NODE_ID_INDEX
-    ] = (jint)snapshot.node_id;
+    if (!LORA_PopPacket(
+            &snapshot))
+    {
+        return JFALSE;
+    }
 
+    return LORA_CopySnapshotToJava(
+        &snapshot,
+        destination
+    );
+}
 
-    destination[
-        LORA_SNAPSHOT_NODE_TARGET_INDEX
-    ] = (jint)snapshot.node_target;
-
-
-    destination[
-        LORA_SNAPSHOT_SOIL_MOISTURE_INDEX
-    ] = (jint)snapshot.soil_moisture;
-
-
-    destination[
-        LORA_SNAPSHOT_SOIL_TEMPERATURE_INDEX
-    ] = (jint)snapshot.soil_temperature;
-
-
-    destination[
-        LORA_SNAPSHOT_CONDUCTIVITY_INDEX
-    ] = (jint)snapshot.conductivity;
-
-
-    destination[
-        LORA_SNAPSHOT_SOIL_PH_INDEX
-    ] = (jint)snapshot.soil_ph;
-
-
-    destination[
-        LORA_SNAPSHOT_NITROGEN_INDEX
-    ] = (jint)snapshot.nitrogen;
-
-
-    destination[
-        LORA_SNAPSHOT_PHOSPHORUS_INDEX
-    ] = (jint)snapshot.phosphorus;
-
-
-    destination[
-        LORA_SNAPSHOT_POTASSIUM_INDEX
-    ] = (jint)snapshot.potassium;
-
-
-    destination[
-        LORA_SNAPSHOT_AIR_TEMPERATURE_INDEX
-    ] = (jint)snapshot.air_temperature;
-
-
-    destination[
-        LORA_SNAPSHOT_AIR_HUMIDITY_INDEX
-    ] = (jint)snapshot.air_humidity;
-
-
-    destination[
-        LORA_SNAPSHOT_LIGHT_INTENSITY_INDEX
-    ] = (jint)snapshot.light_intensity;
-
-
-    destination[
-        LORA_SNAPSHOT_RSSI_INDEX
-    ] = (jint)snapshot.rssi;
-
-
-    destination[
-        LORA_SNAPSHOT_SNR_INDEX
-    ] = (jint)snapshot.snr_quarter_db;
-
-
-    return JTRUE;
+jint
+Java_com_nxp_example_smartgreenhouse_services_lora_LoRaNative_getDroppedCountNative(void)
+{
+    return (jint)LORA_GetDroppedCount();
 }

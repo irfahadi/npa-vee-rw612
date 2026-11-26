@@ -286,6 +286,8 @@ public class HeaderController {
         );
     }
 
+    private static final long PERIODIC_TASK_INTERVAL_MS = 250L;
+
     private void startPeriodicTask() {
         if (this.periodicTimer != null) {
             return;
@@ -310,7 +312,7 @@ public class HeaderController {
                     }
                 },
                 0,
-                5000
+                PERIODIC_TASK_INTERVAL_MS
         );
     }
 

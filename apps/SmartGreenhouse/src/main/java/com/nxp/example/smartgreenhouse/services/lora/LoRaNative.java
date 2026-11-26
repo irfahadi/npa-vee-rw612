@@ -34,7 +34,29 @@ public final class LoRaNative {
         return readLatestNative(destination);
     }
 
+    public static boolean popNext(int[] destination) {
+        if (destination == null) {
+            throw new NullPointerException("Destination tidak boleh null.");
+        }
+
+        if (destination.length < SNAPSHOT_SIZE) {
+            throw new IllegalArgumentException("Destination harus memiliki minimal " + SNAPSHOT_SIZE + " elemen.");
+        }
+
+        return popNextNative(destination);
+    }
+
+    public static int getDroppedCount() {
+        return getDroppedCountNative();
+    }
+
     private static native boolean readLatestNative(
             int[] destination
     );
+
+    private static native boolean popNextNative(
+            int[] destination
+    );
+
+    private static native int getDroppedCountNative();
 }

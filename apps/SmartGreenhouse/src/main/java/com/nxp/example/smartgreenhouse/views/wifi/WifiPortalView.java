@@ -73,9 +73,9 @@ public final class WifiPortalView {
         return html.toString();
     }
 
-    public static String buildPasswordPage(String ssid, float rssi, String brokerAddress, String defaultBrokerAddress) {
+    public static String buildPasswordPage(String ssid, float rssi, String brokerAddress, String defaultBrokerAddress, String edgeBrokerAddress) {
         String safeSsid = escapeHtml(ssid);
-        StringBuilder html = new StringBuilder(4096);
+        StringBuilder html = new StringBuilder(4608);
 
         appendHeader(html, "Hubungkan Wi-Fi");
 
@@ -92,7 +92,7 @@ public final class WifiPortalView {
         html.append("'>");
         html.append("<label class='field-label' for='password'>Password</label>");
         html.append("<input class='password' id='password' name='password' type='password' maxlength='64' placeholder='Masukkan password Wi-Fi'>");
-        html.append("<label class='field-label' for='broker'>Broker MQTT (IP atau IP:port)</label>");
+        html.append("<label class='field-label' for='broker'>Broker MQTT Cloud/Utama (IP atau IP:port)</label>");
         html.append("<input class='password' id='broker' name='broker' type='text' maxlength='64' autocapitalize='off' autocorrect='off' value='");
         html.append(escapeHtml(brokerAddress == null ? "" : brokerAddress));
         html.append("' placeholder='");
@@ -101,6 +101,11 @@ public final class WifiPortalView {
         html.append("<p class='description'>Kosongkan untuk memakai broker bawaan ");
         html.append(escapeHtml(defaultBrokerAddress == null ? "" : defaultBrokerAddress));
         html.append(".</p>");
+        html.append("<label class='field-label' for='edge_broker'>Broker MQTT Edge/Lokal (opsional, mode 2-broker)</label>");
+        html.append("<input class='password' id='edge_broker' name='edge_broker' type='text' maxlength='64' autocapitalize='off' autocorrect='off' value='");
+        html.append(escapeHtml(edgeBrokerAddress == null ? "" : edgeBrokerAddress));
+        html.append("' placeholder='Kosongkan untuk mode 1 broker'>");
+        html.append("<p class='description'>Isi IP broker lokal Jetson/LAN (mis. 192.168.1.50:1883) untuk mode Store-and-Forward 2-broker.</p>");
         html.append("<button class='button' type='submit'>Connect</button>");
         html.append("</form>");
         html.append("<a class='back' href='/scan'>Kembali</a>");

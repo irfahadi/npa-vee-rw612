@@ -319,6 +319,25 @@ void Java_com_nxp_example_smartgreenhouse_services_watchdog_WatchdogNative_refre
     appHeartbeatCounter++;
 }
 
+jint Java_com_nxp_example_smartgreenhouse_services_diagnostics_SystemDiagNative_getFreeNativeHeapNative(void)
+{
+    return (jint)xPortGetFreeHeapSize();
+}
+
+jint Java_com_nxp_example_smartgreenhouse_services_diagnostics_SystemDiagNative_getMinFreeNativeHeapNative(void)
+{
+    return (jint)xPortGetMinimumEverFreeHeapSize();
+}
+
+jint Java_com_nxp_example_smartgreenhouse_services_diagnostics_SystemDiagNative_getCpuLoadPercentNative(void)
+{
+#ifdef CPULOAD_ENABLED
+    return (jint)cpuload_get();
+#else
+    return (jint)-1;
+#endif
+}
+
 static void BOARD_InitLcdicClock()
 {
     CLOCK_EnableClock(

@@ -3,7 +3,10 @@ package com.nxp.example.smartgreenhouse.services.mqtt;
 import com.nxp.example.smartgreenhouse.controllers.ActuatorDetailController;
 import com.nxp.example.smartgreenhouse.models.actuator.ActuatorDataStore;
 import com.nxp.example.smartgreenhouse.models.sensor.SensorData;
+import com.nxp.example.smartgreenhouse.services.diagnostics.SystemDiagNative;
+import com.nxp.example.smartgreenhouse.services.lora.LoRaNative;
 
+import ej.bon.Util;
 import ej.microui.MicroUI;
 
 import org.eclipse.paho.client.mqttv3.MqttCallback;
@@ -15,14 +18,21 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import ej.bon.Util;
-
+/**
+ * Gateway MQTT kolaborasi Sink Node (FRDM-RW612).
+ *
+ * Fitur:
+ * - Mendukung mode 1-broker (default) dan mode 2-broker (Edge Wi-Fi lokal + Cloud backhaul).
+ * - Priority RAM queue (PRIO_CRITICAL=0 > PRIO_HIGH=1 > PRIO_NORMAL=2 > PRIO_LOW=3).
+ * - Store-and-Forward FIFO buffer + in-order replay saat koneksi backhaul pulih.
+ * - Penjadwalan auto-OFF aktuator berdasarkan dur_s dan publikasi diagnostik sys/diag (1 Hz).
+ */
 public final class MqttSubscribeService {
 
     private static final Logger LOGGER = Logger.getLogger("[SMART GREENHOUSE: MQTT SUBSCRIBE SERVICE]");
 
-    // The broker address is provisioned from the WiFi portal; see BrokerConfig (default 168.110.214.70:1883).
     private static final String CLIENT_ID = "clientku";
+    private static final String EDGE_CLIENT_ID = "clientku-edge";
     private static final String TOPIC_FILTER = "gh01/node/255/status/+";
     private static final int SUBSCRIBE_QOS = 0;
     private static final String VALVE_STATUS_TOPIC_PREFIX = "gh01/node/255/status/valve";
@@ -31,9 +41,11 @@ public final class MqttSubscribeService {
     private static final boolean CONTROL_RETAINED = false;
     private static final int MIN_VALVE_ID = 1;
     private static final int MAX_VALVE_ID = 2;
-    private static final long CONNECTION_CHECK_INTERVAL_MS = 5000L;
+    private static final long CONNECTION_CHECK_INTERVAL_MS = 1000L;
     private static final long RECONNECT_INITIAL_DELAY_MS = 2000L;
     private static final long RECONNECT_MAX_DELAY_MS = 30000L;
+    private static final long REPLAY_INTERVAL_MS = 15L;
+    private static final long DIAG_INTERVAL_MS = 1000L;
     private static final boolean AUTHENTICATION_ENABLED = false;
     private static final String USERNAME = "";
     private static final String PASSWORD = "";
@@ -54,45 +66,82 @@ public final class MqttSubscribeService {
     private static final String MISSION_STATUS_TOPIC = "gh01/mission/status";
     private static final String AGENT_MISSION_RESULT_TOPIC = "gh01/agent/mission/result";
     private static final String MISSION_RESULT_TOPIC = "gh01/mission/result";
-    // Cloud -> Sink Node -> Unit Kontrol
+    // Cloud / Sink Node -> Unit Kontrol
     private static final String ACTUATOR_CONTROL_TOPIC = "gh01/actuator/control";
+    // Stress test & Diagnostics
+    private static final String STRESS_LOAD_TOPIC = "gh01/stress/load";
+    private static final String STRESS_LOAD_OUT_TOPIC = "gh01/stress/load/out";
+    private static final String SYS_DIAG_TOPIC = "gh01/sys/diag";
 
-    private static final String[] COLLABORATION_TOPIC_FILTERS = {
-            MISSION_COMMAND_TOPIC,
-            AGENT_MISSION_STATUS_TOPIC,
-            AGENT_MISSION_RESULT_TOPIC,
-            ACTUATOR_CONTROL_TOPIC
-    };
-
-    private static final int COLLABORATION_QOS = 0;
+    private static final int COLLABORATION_QOS = 1;
+    private static final int TELEMETRY_QOS = 0;
     private static final int TELEMETRY_ENV_MAX_BYTES = 192;
     private static final int MISSION_COMMAND_MAX_BYTES = 192;
     private static final int MISSION_STATUS_MAX_BYTES = 128;
     private static final int MISSION_RESULT_MAX_BYTES = 256;
     private static final int ACTUATOR_CONTROL_MAX_BYTES = 128;
+    private static final int STRESS_LOAD_MAX_BYTES = 320;
 
-    private static final int OUTBOUND_QUEUE_CAPACITY = 8;
+    // Mixed-criticality priorities (smaller = higher priority)
+    private static final int PRIO_CRITICAL = 0;
+    private static final int PRIO_HIGH = 1;
+    private static final int PRIO_NORMAL = 2;
+    private static final int PRIO_LOW = 3;
+
+    // Capacities sized for FRDM-RW612 128 KB Java heap
+    private static final int RAM_QUEUE_CAPACITY = 48;
+    private static final int STORE_FORWARD_CAPACITY = 128;
+    private static final int EDGE_OUTBOUND_CAPACITY = 16;
     private static final int PUMP_TIMER_INDEX = 0;
 
     private final ActuatorDataStore actuatorDataStore;
     private final ActuatorDetailController actuatorDetailController;
 
-    private MqttClient mqttClient;
-    private String brokerUri;
+    private MqttClient cloudClient;
+    private MqttClient edgeClient;
+    private String cloudBrokerUri;
+    private String edgeBrokerUri;
+
     private boolean workerStarted;
+    private boolean edgeWorkerStarted;
     private volatile boolean serviceRunning;
-    private volatile boolean subscribed;
+    private volatile boolean cloudSubscribed;
+    private volatile boolean edgeSubscribed;
     private volatile boolean provisioningPaused;
 
     private final boolean[] pendingValveCommands;
     private final boolean[] pendingValveStates;
 
-    // Outbound messages are queued here and published by the MQTT worker only,
-    // so nothing is ever published from the MQTT callback thread.
-    private final String[] outboundTopics;
-    private final byte[][] outboundPayloads;
-    private int outboundHead;
-    private int outboundCount;
+    // Priority RAM queue for Cloud-bound / single-broker outbound traffic
+    private final String[] ramTopics;
+    private final byte[][] ramPayloads;
+    private final int[] ramPriorities;
+    private final int[] ramQos;
+    private final boolean[] ramBufferable;
+    private final long[] ramOrders;
+    private int ramCount;
+    private long nextRamOrder;
+
+    // Store-and-Forward FIFO ring buffer for Cloud outage / backhaul disconnect
+    private final String[] sfTopics;
+    private final byte[][] sfPayloads;
+    private final int[] sfPriorities;
+    private final int[] sfQos;
+    private int sfHead;
+    private int sfCount;
+
+    // Edge-bound outbound FIFO queue (when dual-broker mode is active)
+    private final String[] edgeTopics;
+    private final byte[][] edgePayloads;
+    private final int[] edgeQos;
+    private int edgeHead;
+    private int edgeCount;
+
+    // Telemetry / diagnostics counters
+    private long txSuccessCount;
+    private long dropCount;
+    private long lastDiagPublishedAt;
+    private long lastReplayAt;
 
     // Auto-OFF deadlines (platform time, 0 = none) for "dur_s". Index 0 = pump, 1..n = valve id.
     private final long[] actuatorOffDeadlines;
@@ -108,17 +157,46 @@ public final class MqttSubscribeService {
 
         this.actuatorDataStore = actuatorDataStore;
         this.actuatorDetailController = actuatorDetailController;
-        this.mqttClient = null;
+        this.cloudClient = null;
+        this.edgeClient = null;
+        this.cloudBrokerUri = null;
+        this.edgeBrokerUri = null;
         this.workerStarted = false;
+        this.edgeWorkerStarted = false;
         this.serviceRunning = false;
-        this.subscribed = false;
+        this.cloudSubscribed = false;
+        this.edgeSubscribed = false;
         this.provisioningPaused = false;
+
         this.pendingValveCommands = new boolean[MAX_VALVE_ID + 1];
         this.pendingValveStates = new boolean[MAX_VALVE_ID + 1];
-        this.outboundTopics = new String[OUTBOUND_QUEUE_CAPACITY];
-        this.outboundPayloads = new byte[OUTBOUND_QUEUE_CAPACITY][];
-        this.outboundHead = 0;
-        this.outboundCount = 0;
+
+        this.ramTopics = new String[RAM_QUEUE_CAPACITY];
+        this.ramPayloads = new byte[RAM_QUEUE_CAPACITY][];
+        this.ramPriorities = new int[RAM_QUEUE_CAPACITY];
+        this.ramQos = new int[RAM_QUEUE_CAPACITY];
+        this.ramBufferable = new boolean[RAM_QUEUE_CAPACITY];
+        this.ramOrders = new long[RAM_QUEUE_CAPACITY];
+        this.ramCount = 0;
+        this.nextRamOrder = 0L;
+
+        this.sfTopics = new String[STORE_FORWARD_CAPACITY];
+        this.sfPayloads = new byte[STORE_FORWARD_CAPACITY][];
+        this.sfPriorities = new int[STORE_FORWARD_CAPACITY];
+        this.sfQos = new int[STORE_FORWARD_CAPACITY];
+        this.sfHead = 0;
+        this.sfCount = 0;
+
+        this.edgeTopics = new String[EDGE_OUTBOUND_CAPACITY];
+        this.edgePayloads = new byte[EDGE_OUTBOUND_CAPACITY][];
+        this.edgeQos = new int[EDGE_OUTBOUND_CAPACITY];
+        this.edgeHead = 0;
+        this.edgeCount = 0;
+
+        this.txSuccessCount = 0L;
+        this.dropCount = 0L;
+        this.lastDiagPublishedAt = 0L;
+        this.lastReplayAt = 0L;
         this.actuatorOffDeadlines = new long[MAX_VALVE_ID + 1];
     }
 
@@ -127,6 +205,9 @@ public final class MqttSubscribeService {
             LOGGER.log(Level.INFO, "MQTT connection worker is already running.");
             return;
         }
+
+        this.cloudBrokerUri = BrokerConfig.loadBrokerUri();
+        this.edgeBrokerUri = BrokerConfig.loadEdgeBrokerUri(this.cloudBrokerUri);
 
         this.workerStarted = true;
         this.serviceRunning = true;
@@ -147,13 +228,43 @@ public final class MqttSubscribeService {
             this.workerStarted = false;
             this.serviceRunning = false;
             LOGGER.log(Level.SEVERE, "Unable to start MQTT worker | error=" + error);
+            return;
+        }
+
+        if (this.edgeBrokerUri != null && !this.edgeWorkerStarted) {
+            startEdgeWorker();
+        }
+    }
+
+    private synchronized void startEdgeWorker() {
+        if (this.edgeWorkerStarted || this.edgeBrokerUri == null) {
+            return;
+        }
+
+        this.edgeWorkerStarted = true;
+        Thread edgeWorker = new Thread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        MqttSubscribeService.this.runEdgeConnectionLoop();
+                    }
+                },
+                "mqtt-edge-worker"
+        );
+
+        try {
+            edgeWorker.start();
+        } catch (Error error) {
+            this.edgeWorkerStarted = false;
+            LOGGER.log(Level.SEVERE, "Unable to start MQTT edge worker | error=" + error);
         }
     }
 
     public void pauseForWifiProvisioning() {
         synchronized (this) {
             this.provisioningPaused = true;
-            this.subscribed = false;
+            this.cloudSubscribed = false;
+            this.edgeSubscribed = false;
             notifyAll();
         }
 
@@ -163,10 +274,14 @@ public final class MqttSubscribeService {
 
     public void resumeAfterWifiProvisioning() {
         boolean startWorker;
+        boolean needEdgeWorker;
 
         synchronized (this) {
             this.provisioningPaused = false;
+            this.cloudBrokerUri = BrokerConfig.loadBrokerUri();
+            this.edgeBrokerUri = BrokerConfig.loadEdgeBrokerUri(this.cloudBrokerUri);
             startWorker = !this.workerStarted;
+            needEdgeWorker = !startWorker && this.edgeBrokerUri != null && !this.edgeWorkerStarted;
             notifyAll();
         }
 
@@ -174,6 +289,10 @@ public final class MqttSubscribeService {
             LOGGER.log(Level.INFO, "MQTT starting after WiFi connection.");
             start();
             return;
+        }
+
+        if (needEdgeWorker) {
+            startEdgeWorker();
         }
 
         LOGGER.log(Level.INFO, "MQTT resumed after WiFi connection.");
@@ -185,7 +304,7 @@ public final class MqttSubscribeService {
         while (this.serviceRunning) {
             try {
                 if (this.provisioningPaused) {
-                    disconnectClientForProvisioning();
+                    disconnectCloudClientForProvisioning();
                     waitWhileProvisioningPaused();
                     continue;
                 }
@@ -194,9 +313,9 @@ public final class MqttSubscribeService {
                     break;
                 }
 
-                ensureClientCreated();
+                ensureCloudClientCreated();
 
-                MqttClient client = this.mqttClient;
+                MqttClient client = this.cloudClient;
 
                 if (client == null) {
                     throw new IllegalStateException("MQTT client was not created.");
@@ -207,11 +326,11 @@ public final class MqttSubscribeService {
                 }
 
                 if (!client.isConnected()) {
-                    this.subscribed = false;
+                    this.cloudSubscribed = false;
                 }
 
-                if (!client.isConnected() || !this.subscribed) {
-                    connectAndSubscribeOnce();
+                if (!client.isConnected() || !this.cloudSubscribed) {
+                    connectAndSubscribeCloudOnce();
 
                     if (this.provisioningPaused) {
                         continue;
@@ -220,15 +339,20 @@ public final class MqttSubscribeService {
                     reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
                 }
 
-                while (this.serviceRunning && !this.provisioningPaused && client.isConnected() && this.subscribed) {
+                while (this.serviceRunning && !this.provisioningPaused && client.isConnected() && this.cloudSubscribed) {
                     processPendingControlCommands();
                     processActuatorOffDeadlines();
-                    processOutboundQueue();
+                    processRamQueue();
+                    processStoreAndForwardReplay();
+                    publishDiagnosticsIfDue();
 
                     synchronized (this) {
-                        boolean commandPending = this.pendingValveCommands[1] || this.pendingValveCommands[2] || this.outboundCount > 0;
+                        boolean workPending = this.pendingValveCommands[1]
+                                || this.pendingValveCommands[2]
+                                || this.ramCount > 0
+                                || (this.sfCount > 0 && Util.platformTimeMillis() - this.lastReplayAt >= REPLAY_INTERVAL_MS);
 
-                        if (this.serviceRunning && !this.provisioningPaused && client.isConnected() && this.subscribed && !commandPending) {
+                        if (this.serviceRunning && !this.provisioningPaused && client.isConnected() && this.cloudSubscribed && !workPending) {
                             wait(nextWaitMilliseconds());
                         }
                     }
@@ -238,6 +362,7 @@ public final class MqttSubscribeService {
                 break;
             } catch (MqttException exception) {
                 LOGGER.log(Level.WARNING, "MQTT operation failed | reasonCode=" + exception.getReasonCode() + " | message=" + exception.getMessage() + " | cause=" + exception.getCause());
+                this.cloudSubscribed = false;
             } catch (RuntimeException exception) {
                 LOGGER.log(Level.WARNING, "Unexpected MQTT worker error | error=" + exception);
             }
@@ -250,7 +375,10 @@ public final class MqttSubscribeService {
                 continue;
             }
 
-            LOGGER.log(Level.INFO, "MQTT reconnect scheduled | delayMs=" + reconnectDelay);
+            // While disconnected, drain RAM queue into Store-and-Forward buffer so no messages are lost
+            drainRamQueueToStoreAndForwardOffline();
+
+            LOGGER.log(Level.INFO, "MQTT reconnect scheduled | delayMs=" + reconnectDelay + " | sfBuffered=" + getSfCount());
 
             try {
                 waitForReconnectDelay(reconnectDelay);
@@ -273,40 +401,134 @@ public final class MqttSubscribeService {
         synchronized (this) {
             this.workerStarted = false;
             this.serviceRunning = false;
-            this.subscribed = false;
+            this.cloudSubscribed = false;
         }
 
         LOGGER.log(Level.INFO, "MQTT connection worker stopped.");
     }
 
-    private void disconnectClientForProvisioning() {
+    private void runEdgeConnectionLoop() {
+        long reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
+
+        while (this.serviceRunning) {
+            try {
+                if (this.provisioningPaused || this.edgeBrokerUri == null) {
+                    disconnectEdgeClient();
+                    waitWhileProvisioningOrNoEdge();
+                    continue;
+                }
+
+                ensureEdgeClientCreated();
+                MqttClient client = this.edgeClient;
+
+                if (client == null) {
+                    continue;
+                }
+
+                if (!client.isConnected()) {
+                    this.edgeSubscribed = false;
+                }
+
+                if (!client.isConnected() || !this.edgeSubscribed) {
+                    connectAndSubscribeEdgeOnce();
+
+                    if (this.provisioningPaused) {
+                        continue;
+                    }
+
+                    reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
+                }
+
+                while (this.serviceRunning && !this.provisioningPaused && this.edgeBrokerUri != null && client.isConnected() && this.edgeSubscribed) {
+                    processEdgeOutboundQueue();
+
+                    synchronized (this) {
+                        if (this.serviceRunning && !this.provisioningPaused && this.edgeBrokerUri != null
+                                && client.isConnected() && this.edgeSubscribed && this.edgeCount == 0) {
+                            wait(CONNECTION_CHECK_INTERVAL_MS);
+                        }
+                    }
+                }
+            } catch (InterruptedException exception) {
+                LOGGER.log(Level.WARNING, "MQTT edge worker interrupted | error=" + exception);
+                break;
+            } catch (MqttException exception) {
+                LOGGER.log(Level.WARNING, "MQTT edge operation failed | reasonCode=" + exception.getReasonCode() + " | message=" + exception.getMessage());
+                this.edgeSubscribed = false;
+            } catch (RuntimeException exception) {
+                LOGGER.log(Level.WARNING, "Unexpected MQTT edge worker error | error=" + exception);
+            }
+
+            if (!this.serviceRunning) {
+                break;
+            }
+
+            if (this.provisioningPaused || this.edgeBrokerUri == null) {
+                continue;
+            }
+
+            try {
+                waitForReconnectDelay(reconnectDelay);
+            } catch (InterruptedException exception) {
+                break;
+            }
+
+            reconnectDelay = reconnectDelay * 2L;
+
+            if (reconnectDelay > RECONNECT_MAX_DELAY_MS) {
+                reconnectDelay = RECONNECT_MAX_DELAY_MS;
+            }
+        }
+
+        synchronized (this) {
+            this.edgeWorkerStarted = false;
+            this.edgeSubscribed = false;
+        }
+    }
+
+    private void disconnectCloudClientForProvisioning() {
         MqttClient client;
 
         synchronized (this) {
-            this.subscribed = false;
-            client = this.mqttClient;
+            this.cloudSubscribed = false;
+            client = this.cloudClient;
         }
 
         if (client == null || !client.isConnected()) {
-            LOGGER.log(Level.INFO, "MQTT paused for WiFi provisioning | client is not connected.");
-            discardClientForBrokerReload();
+            discardCloudClientForBrokerReload();
             return;
         }
 
         try {
             client.disconnect();
-            LOGGER.log(Level.INFO, "MQTT disconnected for WiFi provisioning.");
+            LOGGER.log(Level.INFO, "MQTT cloud disconnected for WiFi provisioning.");
         } catch (MqttException exception) {
-            LOGGER.log(Level.WARNING, "MQTT disconnect during WiFi provisioning failed | reasonCode=" + exception.getReasonCode() + " | message=" + exception.getMessage());
+            LOGGER.log(Level.WARNING, "MQTT cloud disconnect during WiFi provisioning failed | reasonCode=" + exception.getReasonCode());
         } finally {
-            discardClientForBrokerReload();
+            discardCloudClientForBrokerReload();
         }
     }
 
-    /** Drops the client so it is recreated with the (possibly new) provisioned broker address. */
-    private synchronized void discardClientForBrokerReload() {
-        this.mqttClient = null;
-        this.subscribed = false;
+    private void disconnectEdgeClient() {
+        MqttClient client;
+
+        synchronized (this) {
+            this.edgeSubscribed = false;
+            client = this.edgeClient;
+            this.edgeClient = null;
+        }
+
+        if (client != null && client.isConnected()) {
+            try {
+                client.disconnect();
+            } catch (MqttException ignored) {
+            }
+        }
+    }
+
+    private synchronized void discardCloudClientForBrokerReload() {
+        this.cloudClient = null;
+        this.cloudSubscribed = false;
     }
 
     private void waitWhileProvisioningPaused() throws InterruptedException {
@@ -317,88 +539,103 @@ public final class MqttSubscribeService {
         }
     }
 
+    private void waitWhileProvisioningOrNoEdge() throws InterruptedException {
+        synchronized (this) {
+            while (this.serviceRunning && (this.provisioningPaused || this.edgeBrokerUri == null)) {
+                wait();
+            }
+        }
+    }
+
     private void waitForReconnectDelay(long delayMilliseconds) throws InterruptedException {
         long deadline = Util.platformTimeMillis() + delayMilliseconds;
 
         synchronized (this) {
             while (this.serviceRunning && !this.provisioningPaused) {
+                drainRamQueueToStoreAndForwardLocked();
+                processActuatorOffDeadlinesLocked();
+
                 long remaining = deadline - Util.platformTimeMillis();
 
                 if (remaining <= 0L) {
                     return;
                 }
 
-                wait(remaining);
+                long step = remaining > 500L ? 500L : remaining;
+                wait(step);
             }
         }
     }
 
-    private synchronized void ensureClientCreated() throws MqttException {
-        if (this.mqttClient != null) {
+    private synchronized void ensureCloudClientCreated() throws MqttException {
+        if (this.cloudClient != null) {
             return;
         }
 
-        this.brokerUri = BrokerConfig.loadBrokerUri();
-        this.mqttClient = new MqttClient(this.brokerUri, CLIENT_ID);
-
-        this.mqttClient.setCallback(
-                new MqttCallback() {
-                    @Override
-                    public void connectionLost(Throwable cause) {
-                        MqttSubscribeService.this.subscribed = false;
-                        MqttSubscribeService.this.failAllPendingValveCommands();
-
-                        synchronized (MqttSubscribeService.this) {
-                            MqttSubscribeService.this.notifyAll();
-                        }
-
-                        if (cause instanceof MqttException) {
-                            MqttException mqttException = (MqttException) cause;
-
-                            LOGGER.log(
-                                    Level.WARNING,
-                                    "MQTT connection lost"
-                                            + " | reasonCode=" + mqttException.getReasonCode()
-                                            + " | message=" + mqttException.getMessage()
-                                            + " | rootCause=" + mqttException.getCause()
-                            );
-                        } else {
-                            LOGGER.log(Level.WARNING, "MQTT connection lost | cause=" + cause);
-                        }
-                    }
-
-                    @Override
-                    public void messageArrived(String topic, MqttMessage message) {
-                        byte[] payload = message.getPayload();
-                        String payloadText = payload == null ? "" : new String(payload);
-
-                        LOGGER.log(
-                                Level.INFO,
-                                "\r\n"
-                                        + "[MQTT] Message received"
-                                        + "\r\n"
-                                        + "[MQTT] Topic   : " + topic
-                                        + "\r\n"
-                                        + "[MQTT] QoS     : " + message.getQos()
-                                        + "\r\n"
-                                        + "[MQTT] Payload : " + payloadText
-                        );
-
-                        try {
-                            dispatchMessage(topic, payloadText);
-                        } catch (RuntimeException exception) {
-                            LOGGER.log(Level.WARNING, "MQTT message handling failed | topic=" + topic + " | error=" + exception);
-                        }
-                    }
-                }
-        );
+        this.cloudBrokerUri = BrokerConfig.loadBrokerUri();
+        this.edgeBrokerUri = BrokerConfig.loadEdgeBrokerUri(this.cloudBrokerUri);
+        this.cloudClient = new MqttClient(this.cloudBrokerUri, CLIENT_ID);
+        this.cloudClient.setCallback(createCallback(false));
     }
 
-    private void connectAndSubscribeOnce() throws MqttException {
-        MqttClient client = this.mqttClient;
+    private synchronized void ensureEdgeClientCreated() throws MqttException {
+        if (this.edgeClient != null || this.edgeBrokerUri == null) {
+            return;
+        }
+
+        this.edgeClient = new MqttClient(this.edgeBrokerUri, EDGE_CLIENT_ID);
+        this.edgeClient.setCallback(createCallback(true));
+    }
+
+    private MqttCallback createCallback(final boolean isEdgeClient) {
+        return new MqttCallback() {
+            @Override
+            public void connectionLost(Throwable cause) {
+                if (isEdgeClient) {
+                    MqttSubscribeService.this.edgeSubscribed = false;
+                } else {
+                    MqttSubscribeService.this.cloudSubscribed = false;
+                    MqttSubscribeService.this.failAllPendingValveCommands();
+                }
+
+                synchronized (MqttSubscribeService.this) {
+                    MqttSubscribeService.this.notifyAll();
+                }
+
+                String tag = isEdgeClient ? "MQTT edge" : "MQTT cloud";
+
+                if (cause instanceof MqttException) {
+                    MqttException mqttException = (MqttException) cause;
+                    LOGGER.log(
+                            Level.WARNING,
+                            tag + " connection lost"
+                                    + " | reasonCode=" + mqttException.getReasonCode()
+                                    + " | message=" + mqttException.getMessage()
+                    );
+                } else {
+                    LOGGER.log(Level.WARNING, tag + " connection lost | cause=" + cause);
+                }
+            }
+
+            @Override
+            public void messageArrived(String topic, MqttMessage message) {
+                byte[] payload = message.getPayload();
+                String payloadText = payload == null ? "" : new String(payload);
+
+                try {
+                    dispatchMessage(topic, payloadText, isEdgeClient);
+                } catch (RuntimeException exception) {
+                    LOGGER.log(Level.WARNING, "MQTT message handling failed | topic=" + topic + " | error=" + exception);
+                }
+            }
+        };
+    }
+
+    private void connectAndSubscribeCloudOnce() throws MqttException {
+        MqttClient client = this.cloudClient;
 
         if (client == null) {
-            throw new IllegalStateException("MQTT client is null.");
+            throw new IllegalStateException("MQTT cloud client is null.");
         }
 
         if (this.provisioningPaused) {
@@ -406,21 +643,11 @@ public final class MqttSubscribeService {
         }
 
         if (!client.isConnected()) {
-            LOGGER.log(Level.INFO, "Connecting to MQTT broker | URI=" + this.brokerUri + " | clientId=" + CLIENT_ID);
-
-            MqttConnectOptions connectOptions = new MqttConnectOptions();
-            connectOptions.setConnectionTimeout(10);
-            connectOptions.setKeepAliveInterval(60);
-
-            if (AUTHENTICATION_ENABLED) {
-                connectOptions.setUserName(USERNAME);
-                connectOptions.setPassword(PASSWORD.toCharArray());
-            }
-
-            client.connect(connectOptions);
+            LOGGER.log(Level.INFO, "Connecting to Cloud MQTT broker | URI=" + this.cloudBrokerUri + " | clientId=" + CLIENT_ID);
+            client.connect(buildConnectOptions());
 
             if (this.provisioningPaused) {
-                this.subscribed = false;
+                this.cloudSubscribed = false;
 
                 if (client.isConnected()) {
                     client.disconnect();
@@ -429,23 +656,72 @@ public final class MqttSubscribeService {
                 return;
             }
 
-            LOGGER.log(Level.INFO, "MQTT broker connected | URI=" + this.brokerUri);
+            LOGGER.log(Level.INFO, "Cloud MQTT broker connected | URI=" + this.cloudBrokerUri);
         }
 
-        if (!this.subscribed && !this.provisioningPaused) {
-            LOGGER.log(Level.INFO, "Subscribing to MQTT topic | topic=" + TOPIC_FILTER + " | qos=" + SUBSCRIBE_QOS);
-
+        if (!this.cloudSubscribed && !this.provisioningPaused) {
             client.subscribe(TOPIC_FILTER, SUBSCRIBE_QOS);
+            client.subscribe(MISSION_COMMAND_TOPIC, COLLABORATION_QOS);
+            client.subscribe(ACTUATOR_CONTROL_TOPIC, COLLABORATION_QOS);
 
-            for (int index = 0; index < COLLABORATION_TOPIC_FILTERS.length; index++) {
-                client.subscribe(COLLABORATION_TOPIC_FILTERS[index], COLLABORATION_QOS);
-                LOGGER.log(Level.INFO, "MQTT subscription successful | topic=" + COLLABORATION_TOPIC_FILTERS[index]);
+            if (this.edgeBrokerUri == null) {
+                // Single-broker mode: Cloud client also receives local agent & stress topics
+                client.subscribe(AGENT_MISSION_STATUS_TOPIC, COLLABORATION_QOS);
+                client.subscribe(AGENT_MISSION_RESULT_TOPIC, COLLABORATION_QOS);
+                client.subscribe(STRESS_LOAD_TOPIC, TELEMETRY_QOS);
             }
 
-            this.subscribed = true;
-
-            LOGGER.log(Level.INFO, "MQTT subscription successful | topic=" + TOPIC_FILTER);
+            this.cloudSubscribed = true;
+            LOGGER.log(Level.INFO, "Cloud MQTT subscriptions active | sfPending=" + getSfCount());
         }
+    }
+
+    private void connectAndSubscribeEdgeOnce() throws MqttException {
+        MqttClient client = this.edgeClient;
+
+        if (client == null || this.provisioningPaused) {
+            return;
+        }
+
+        if (!client.isConnected()) {
+            LOGGER.log(Level.INFO, "Connecting to Edge MQTT broker | URI=" + this.edgeBrokerUri + " | clientId=" + EDGE_CLIENT_ID);
+            client.connect(buildConnectOptions());
+
+            if (this.provisioningPaused) {
+                this.edgeSubscribed = false;
+
+                if (client.isConnected()) {
+                    client.disconnect();
+                }
+
+                return;
+            }
+
+            LOGGER.log(Level.INFO, "Edge MQTT broker connected | URI=" + this.edgeBrokerUri);
+        }
+
+        if (!this.edgeSubscribed && !this.provisioningPaused) {
+            client.subscribe(TOPIC_FILTER, SUBSCRIBE_QOS);
+            client.subscribe(AGENT_MISSION_STATUS_TOPIC, COLLABORATION_QOS);
+            client.subscribe(AGENT_MISSION_RESULT_TOPIC, COLLABORATION_QOS);
+            client.subscribe(STRESS_LOAD_TOPIC, TELEMETRY_QOS);
+
+            this.edgeSubscribed = true;
+            LOGGER.log(Level.INFO, "Edge MQTT subscriptions active.");
+        }
+    }
+
+    private MqttConnectOptions buildConnectOptions() {
+        MqttConnectOptions connectOptions = new MqttConnectOptions();
+        connectOptions.setConnectionTimeout(10);
+        connectOptions.setKeepAliveInterval(60);
+
+        if (AUTHENTICATION_ENABLED) {
+            connectOptions.setUserName(USERNAME);
+            connectOptions.setPassword(PASSWORD.toCharArray());
+        }
+
+        return connectOptions;
     }
 
     public synchronized boolean requestValveControl(int valveId, boolean targetOpen) {
@@ -459,15 +735,19 @@ public final class MqttSubscribeService {
             return false;
         }
 
-        if (this.mqttClient == null || !this.mqttClient.isConnected()) {
+        if (this.edgeBrokerUri != null && isEdgeReady()) {
+            this.pendingValveStates[valveId] = targetOpen;
+            this.pendingValveCommands[valveId] = true;
+            this.actuatorOffDeadlines[valveId] = 0L;
+            notifyAll();
+            return true;
+        }
+
+        if (this.cloudClient == null || !this.cloudClient.isConnected()) {
             LOGGER.log(
                     Level.WARNING,
-                    "Valve control rejected"
-                            + " | MQTT is not connected"
-                            + " | valveId=" + valveId
-                            + " | target=" + (targetOpen ? "ON" : "OFF")
+                    "Valve control rejected | MQTT is not connected | valveId=" + valveId
             );
-
             return false;
         }
 
@@ -475,14 +755,6 @@ public final class MqttSubscribeService {
         this.pendingValveCommands[valveId] = true;
         this.actuatorOffDeadlines[valveId] = 0L;
         notifyAll();
-
-        LOGGER.log(
-                Level.INFO,
-                "[MQTT] Valve control queued"
-                        + " | valveId=" + valveId
-                        + " | trayId=" + valveId
-                        + " | payload=" + (targetOpen ? "1" : "0")
-        );
 
         return true;
     }
@@ -513,9 +785,9 @@ public final class MqttSubscribeService {
             return;
         }
 
-        MqttClient client = this.mqttClient;
+        MqttClient targetClient = (this.edgeBrokerUri != null && isEdgeReady()) ? this.edgeClient : this.cloudClient;
 
-        if (client == null || !client.isConnected()) {
+        if (targetClient == null || !targetClient.isConnected()) {
             boolean removed = clearPendingValveCommand(valveId, targetOpen);
 
             if (removed) {
@@ -528,17 +800,8 @@ public final class MqttSubscribeService {
         String topic = VALVE_CONTROL_TOPIC_PREFIX + valveId;
         String payloadText = targetOpen ? "1" : "0";
 
-        LOGGER.log(
-                Level.INFO,
-                "[MQTT] Publishing valve control"
-                        + " | topic=" + topic
-                        + " | payload=" + payloadText
-                        + " | qos=" + CONTROL_QOS
-                        + " | retained=" + CONTROL_RETAINED
-        );
-
         try {
-            client.publish(topic, payloadText.getBytes(), CONTROL_QOS, CONTROL_RETAINED);
+            targetClient.publish(topic, payloadText.getBytes(), CONTROL_QOS, CONTROL_RETAINED);
         } catch (MqttException exception) {
             boolean removed = clearPendingValveCommand(valveId, targetOpen);
 
@@ -583,8 +846,6 @@ public final class MqttSubscribeService {
     }
 
     private void notifyValveControlPublishFailed(final int valveId, final boolean targetOpen) {
-        LOGGER.log(Level.WARNING, "[MQTT] Valve control publish failed | valveId=" + valveId + " | target=" + (targetOpen ? "ON" : "OFF"));
-
         MicroUI.callSerially(
                 new Runnable() {
                     @Override
@@ -615,7 +876,7 @@ public final class MqttSubscribeService {
         }
     }
 
-    private void dispatchMessage(String topic, String payloadText) {
+    private void dispatchMessage(String topic, String payloadText, boolean fromEdgeClient) {
         if (topic == null) {
             return;
         }
@@ -623,13 +884,15 @@ public final class MqttSubscribeService {
         if (topic.startsWith(ACTUATOR_STATUS_TOPIC_PREFIX)) {
             handleValveStatus(topic, payloadText);
         } else if (MISSION_COMMAND_TOPIC.equals(topic)) {
-            relayMission(topic, AGENT_MISSION_COMMAND_TOPIC, payloadText, MISSION_COMMAND_MAX_BYTES, "cmd");
+            relayCommandToAgent(topic, payloadText);
         } else if (AGENT_MISSION_STATUS_TOPIC.equals(topic)) {
-            relayMission(topic, MISSION_STATUS_TOPIC, payloadText, MISSION_STATUS_MAX_BYTES, "st");
+            relayMissionToCloud(topic, MISSION_STATUS_TOPIC, payloadText, MISSION_STATUS_MAX_BYTES, "st", PRIO_HIGH, fromEdgeClient);
         } else if (AGENT_MISSION_RESULT_TOPIC.equals(topic)) {
-            relayMission(topic, MISSION_RESULT_TOPIC, payloadText, MISSION_RESULT_MAX_BYTES, "tray_id");
+            relayMissionToCloud(topic, MISSION_RESULT_TOPIC, payloadText, MISSION_RESULT_MAX_BYTES, "tray_id", PRIO_HIGH, fromEdgeClient);
         } else if (ACTUATOR_CONTROL_TOPIC.equals(topic)) {
             handleActuatorControl(payloadText);
+        } else if (STRESS_LOAD_TOPIC.equals(topic)) {
+            handleStressLoad(payloadText);
         } else {
             LOGGER.log(Level.WARNING, "Unsupported MQTT topic | topic=" + topic);
         }
@@ -637,22 +900,19 @@ public final class MqttSubscribeService {
 
     /**
      * Publishes one LoRa sensor sample to the cloud on telemetry/env.
-     * Safe to call from any thread; the sample is dropped when MQTT is not connected.
+     * Safe to call from any thread; buffered into Store-and-Forward when backhaul is offline.
      */
     public boolean publishTelemetry(SensorData data, int sequence, int rssi, long timestampMillis) {
         if (data == null) {
             return false;
         }
 
-        if (!isReadyToPublish()) {
-            return false;
-        }
-
+        long tsMillis = timestampMillis > 0L ? timestampMillis : Util.currentTimeMillis();
         StringBuilder json = new StringBuilder(TELEMETRY_ENV_MAX_BYTES);
 
         json.append("{\"h_id\":\"").append(HOUSE_ID).append("\",\"n_id\":").append(data.getNodeId());
         json.append(",\"seq\":").append(sequence);
-        json.append(",\"ts\":").append(timestampMillis / 1000L);
+        json.append(",\"ts\":").append(tsMillis);
         json.append(",\"sm\":");
         appendTenths(json, data.getSm());
         json.append(",\"st\":");
@@ -675,10 +935,11 @@ public final class MqttSubscribeService {
 
         if (payload.length > TELEMETRY_ENV_MAX_BYTES) {
             LOGGER.log(Level.WARNING, "Telemetry dropped | payload too large | bytes=" + payload.length);
+            incrementDropCount();
             return false;
         }
 
-        return enqueueOutbound(TELEMETRY_ENV_TOPIC, payload);
+        return enqueueRamQueue(TELEMETRY_ENV_TOPIC, payload, PRIO_NORMAL, TELEMETRY_QOS, true);
     }
 
     private static void appendTenths(StringBuilder builder, float value) {
@@ -692,12 +953,39 @@ public final class MqttSubscribeService {
         builder.append(scaled / 10).append('.').append(scaled % 10);
     }
 
-    /** Forwards a mission message unchanged between the cloud side and the Collaboration Agent side. */
-    private void relayMission(String sourceTopic, String targetTopic, String payloadText, int maxBytes, String requiredKey) {
+    private void relayCommandToAgent(String sourceTopic, String payloadText) {
+        byte[] payload = payloadText == null ? new byte[0] : payloadText.getBytes();
+
+        if (payload.length == 0 || payload.length > MISSION_COMMAND_MAX_BYTES) {
+            LOGGER.log(Level.WARNING, "Command dropped | invalid size | topic=" + sourceTopic + " | bytes=" + payload.length);
+            incrementDropCount();
+            return;
+        }
+
+        String missionId = JsonLite.getString(payloadText, "m_id");
+
+        if (missionId == null || !JsonLite.hasKey(payloadText, "cmd")) {
+            LOGGER.log(Level.WARNING, "Command dropped | missing m_id or cmd | topic=" + sourceTopic);
+            incrementDropCount();
+            return;
+        }
+
+        if (this.edgeBrokerUri != null) {
+            enqueueEdgeOutbound(AGENT_MISSION_COMMAND_TOPIC, payload, COLLABORATION_QOS);
+        } else {
+            enqueueRamQueue(AGENT_MISSION_COMMAND_TOPIC, payload, PRIO_CRITICAL, COLLABORATION_QOS, false);
+        }
+
+        LOGGER.log(Level.INFO, "[MQTT] Command relayed | m_id=" + missionId + " | to=" + AGENT_MISSION_COMMAND_TOPIC);
+    }
+
+    /** Forwards a mission message from Collaboration Agent toward Cloud (with Store-and-Forward support). */
+    private void relayMissionToCloud(String sourceTopic, String targetTopic, String payloadText, int maxBytes, String requiredKey, int priority, boolean fromEdgeClient) {
         byte[] payload = payloadText == null ? new byte[0] : payloadText.getBytes();
 
         if (payload.length == 0 || payload.length > maxBytes) {
             LOGGER.log(Level.WARNING, "Mission message dropped | invalid size | topic=" + sourceTopic + " | bytes=" + payload.length + " | max=" + maxBytes);
+            incrementDropCount();
             return;
         }
 
@@ -705,12 +993,42 @@ public final class MqttSubscribeService {
 
         if (missionId == null || !JsonLite.hasKey(payloadText, requiredKey)) {
             LOGGER.log(Level.WARNING, "Mission message dropped | missing m_id or " + requiredKey + " | topic=" + sourceTopic);
+            incrementDropCount();
             return;
         }
 
-        if (enqueueOutbound(targetTopic, payload)) {
-            LOGGER.log(Level.INFO, "[MQTT] Mission message relayed | m_id=" + missionId + " | from=" + sourceTopic + " | to=" + targetTopic);
+        boolean queued = enqueueRamQueue(targetTopic, payload, priority, COLLABORATION_QOS, true);
+
+        if (queued) {
+            if (fromEdgeClient && !isCloudReady()) {
+                LOGGER.log(Level.INFO, "[S&F] Buffered offline | m_id=" + missionId + " | topic=" + targetTopic);
+            } else {
+                LOGGER.log(Level.INFO, "[MQTT] Mission relayed | m_id=" + missionId + " | from=" + sourceTopic + " | to=" + targetTopic);
+            }
         }
+    }
+
+    private void handleStressLoad(String payloadText) {
+        byte[] payload = payloadText == null ? new byte[0] : payloadText.getBytes();
+
+        if (payload.length == 0 || payload.length > STRESS_LOAD_MAX_BYTES) {
+            incrementDropCount();
+            return;
+        }
+
+        int crit = JsonLite.getInt(payloadText, "c", 1);
+        int priority;
+
+        if (crit >= 3) {
+            priority = PRIO_HIGH;
+        } else if (crit == 2) {
+            priority = PRIO_NORMAL;
+        } else {
+            priority = PRIO_LOW;
+        }
+
+        String targetTopic = (this.edgeBrokerUri != null) ? STRESS_LOAD_TOPIC : STRESS_LOAD_OUT_TOPIC;
+        enqueueRamQueue(targetTopic, payload, priority, TELEMETRY_QOS, false);
     }
 
     /**
@@ -786,29 +1104,60 @@ public final class MqttSubscribeService {
 
     private boolean enqueueActuatorCommand(int timerIndex, boolean targetOn) {
         String topic = timerIndex == PUMP_TIMER_INDEX ? PUMP_CONTROL_TOPIC : VALVE_CONTROL_TOPIC_PREFIX + timerIndex;
+        byte[] payload = (targetOn ? "1" : "0").getBytes();
 
-        return enqueueOutbound(topic, (targetOn ? "1" : "0").getBytes());
+        if (this.edgeBrokerUri != null && isEdgeReady()) {
+            return enqueueEdgeOutbound(topic, payload, CONTROL_QOS);
+        }
+
+        return enqueueRamQueue(topic, payload, PRIO_CRITICAL, CONTROL_QOS, true);
     }
 
     /** Switches OFF every actuator whose "dur_s" window has elapsed. */
     private void processActuatorOffDeadlines() {
+        boolean[] expiredFlags = new boolean[this.actuatorOffDeadlines.length];
+
+        synchronized (this) {
+            collectExpiredActuatorDeadlinesLocked(expiredFlags);
+        }
+
+        for (int index = 0; index < expiredFlags.length; index++) {
+            if (expiredFlags[index]) {
+                LOGGER.log(Level.INFO, "[MQTT] Actuator duration elapsed | switching OFF | index=" + index);
+                enqueueActuatorCommand(index, false);
+            }
+        }
+    }
+
+    private void processActuatorOffDeadlinesLocked() {
         long now = Util.platformTimeMillis();
 
         for (int index = 0; index < this.actuatorOffDeadlines.length; index++) {
-            boolean expired;
+            long deadline = this.actuatorOffDeadlines[index];
 
-            synchronized (this) {
-                long deadline = this.actuatorOffDeadlines[index];
-                expired = deadline != 0L && now >= deadline;
+            if (deadline != 0L && now >= deadline) {
+                this.actuatorOffDeadlines[index] = 0L;
+                String topic = index == PUMP_TIMER_INDEX ? PUMP_CONTROL_TOPIC : VALVE_CONTROL_TOPIC_PREFIX + index;
+                byte[] payload = "0".getBytes();
 
-                if (expired) {
-                    this.actuatorOffDeadlines[index] = 0L;
+                if (this.edgeBrokerUri != null && isEdgeReadyLocked()) {
+                    enqueueEdgeOutboundLocked(topic, payload, CONTROL_QOS);
+                } else {
+                    enqueueRamQueueLocked(topic, payload, PRIO_CRITICAL, CONTROL_QOS, true);
                 }
             }
+        }
+    }
 
-            if (expired) {
-                LOGGER.log(Level.INFO, "[MQTT] Actuator duration elapsed | switching OFF | index=" + index);
-                enqueueActuatorCommand(index, false);
+    private void collectExpiredActuatorDeadlinesLocked(boolean[] expiredFlags) {
+        long now = Util.platformTimeMillis();
+
+        for (int index = 0; index < this.actuatorOffDeadlines.length; index++) {
+            long deadline = this.actuatorOffDeadlines[index];
+
+            if (deadline != 0L && now >= deadline) {
+                this.actuatorOffDeadlines[index] = 0L;
+                expiredFlags[index] = true;
             }
         }
     }
@@ -826,62 +1175,451 @@ public final class MqttSubscribeService {
             }
         }
 
+        if (this.sfCount > 0) {
+            long replayWait = REPLAY_INTERVAL_MS - (now - this.lastReplayAt);
+
+            if (replayWait < waitMilliseconds) {
+                waitMilliseconds = replayWait;
+            }
+        }
+
+        long diagWait = DIAG_INTERVAL_MS - (now - this.lastDiagPublishedAt);
+
+        if (diagWait < waitMilliseconds) {
+            waitMilliseconds = diagWait;
+        }
+
         return waitMilliseconds < 1L ? 1L : waitMilliseconds;
     }
 
-    private synchronized boolean isReadyToPublish() {
-        return !this.provisioningPaused && this.subscribed && this.mqttClient != null && this.mqttClient.isConnected();
+    private synchronized boolean isCloudReady() {
+        return !this.provisioningPaused && this.cloudSubscribed && this.cloudClient != null && this.cloudClient.isConnected();
     }
 
-    private synchronized boolean enqueueOutbound(String topic, byte[] payload) {
-        if (!isReadyToPublish()) {
-            LOGGER.log(Level.WARNING, "MQTT publish rejected | not connected | topic=" + topic);
+    private synchronized boolean isEdgeReady() {
+        return isEdgeReadyLocked();
+    }
+
+    private boolean isEdgeReadyLocked() {
+        return !this.provisioningPaused && this.edgeSubscribed && this.edgeClient != null && this.edgeClient.isConnected();
+    }
+
+    private synchronized void incrementDropCount() {
+        this.dropCount++;
+    }
+
+    private synchronized int getSfCount() {
+        return this.sfCount;
+    }
+
+    private synchronized boolean enqueueRamQueue(String topic, byte[] payload, int priority, int qos, boolean bufferable) {
+        boolean queued = enqueueRamQueueLocked(topic, payload, priority, qos, bufferable);
+        notifyAll();
+        return queued;
+    }
+
+    private boolean enqueueRamQueueLocked(String topic, byte[] payload, int priority, int qos, boolean bufferable) {
+        if (this.ramCount < RAM_QUEUE_CAPACITY) {
+            int idx = this.ramCount;
+            this.ramTopics[idx] = topic;
+            this.ramPayloads[idx] = payload;
+            this.ramPriorities[idx] = priority;
+            this.ramQos[idx] = qos;
+            this.ramBufferable[idx] = bufferable;
+            this.ramOrders[idx] = ++this.nextRamOrder;
+            this.ramCount++;
+            return true;
+        }
+
+        // Priority-aware eviction: evict lowest priority (highest priority int, oldest order)
+        int worstIndex = -1;
+        int worstPriority = priority;
+        long oldestWorstOrder = Long.MAX_VALUE;
+
+        for (int index = 0; index < this.ramCount; index++) {
+            int p = this.ramPriorities[index];
+
+            if (p > worstPriority || (p == worstPriority && p > priority && this.ramOrders[index] < oldestWorstOrder)) {
+                worstPriority = p;
+                oldestWorstOrder = this.ramOrders[index];
+                worstIndex = index;
+            }
+        }
+
+        if (worstIndex < 0) {
+            this.dropCount++;
+            LOGGER.log(Level.WARNING, "RAM queue full | dropped incoming topic=" + topic + " | prio=" + priority);
             return false;
         }
 
-        if (this.outboundCount == OUTBOUND_QUEUE_CAPACITY) {
-            LOGGER.log(Level.WARNING, "MQTT outbound queue full | dropping oldest | topic=" + this.outboundTopics[this.outboundHead]);
-            this.outboundHead = (this.outboundHead + 1) % OUTBOUND_QUEUE_CAPACITY;
-            this.outboundCount--;
-        }
-
-        int tail = (this.outboundHead + this.outboundCount) % OUTBOUND_QUEUE_CAPACITY;
-
-        this.outboundTopics[tail] = topic;
-        this.outboundPayloads[tail] = payload;
-        this.outboundCount++;
-        notifyAll();
-
+        this.dropCount++;
+        LOGGER.log(Level.WARNING, "RAM queue full | evicted prio=" + this.ramPriorities[worstIndex] + " for topic=" + topic);
+        this.ramTopics[worstIndex] = topic;
+        this.ramPayloads[worstIndex] = payload;
+        this.ramPriorities[worstIndex] = priority;
+        this.ramQos[worstIndex] = qos;
+        this.ramBufferable[worstIndex] = bufferable;
+        this.ramOrders[worstIndex] = ++this.nextRamOrder;
         return true;
     }
 
-    private void processOutboundQueue() throws MqttException {
+    private int dequeueBestRamIndexLocked() {
+        if (this.ramCount == 0) {
+            return -1;
+        }
+
+        int bestIndex = 0;
+
+        for (int index = 1; index < this.ramCount; index++) {
+            int p = this.ramPriorities[index];
+            int bestP = this.ramPriorities[bestIndex];
+
+            if (p < bestP || (p == bestP && this.ramOrders[index] < this.ramOrders[bestIndex])) {
+                bestIndex = index;
+            }
+        }
+
+        return bestIndex;
+    }
+
+    private void removeRamIndexLocked(int index) {
+        int last = this.ramCount - 1;
+
+        if (index != last) {
+            this.ramTopics[index] = this.ramTopics[last];
+            this.ramPayloads[index] = this.ramPayloads[last];
+            this.ramPriorities[index] = this.ramPriorities[last];
+            this.ramQos[index] = this.ramQos[last];
+            this.ramBufferable[index] = this.ramBufferable[last];
+            this.ramOrders[index] = this.ramOrders[last];
+        }
+
+        this.ramTopics[last] = null;
+        this.ramPayloads[last] = null;
+        this.ramCount = last;
+    }
+
+    private void drainRamQueueToStoreAndForwardOffline() {
+        synchronized (this) {
+            drainRamQueueToStoreAndForwardLocked();
+        }
+    }
+
+    private void drainRamQueueToStoreAndForwardLocked() {
+        while (this.ramCount > 0) {
+            int best = dequeueBestRamIndexLocked();
+            String topic = this.ramTopics[best];
+            byte[] payload = this.ramPayloads[best];
+            int priority = this.ramPriorities[best];
+            int qos = this.ramQos[best];
+            boolean bufferable = this.ramBufferable[best];
+            removeRamIndexLocked(best);
+
+            if (bufferable) {
+                appendStoreAndForwardLocked(topic, payload, priority, qos);
+            } else {
+                this.dropCount++;
+            }
+        }
+    }
+
+    private boolean appendStoreAndForwardLocked(String topic, byte[] payload, int priority, int qos) {
+        if (this.sfCount == STORE_FORWARD_CAPACITY) {
+            // Prefer evicting the oldest telemetry (lowest criticality) before dropping mission data
+            int evictPos = findOldestLowPrioritySfOffsetLocked(priority);
+
+            if (evictPos < 0) {
+                this.dropCount++;
+                LOGGER.log(Level.WARNING, "S&F buffer full | dropped topic=" + topic);
+                return false;
+            }
+
+            removeSfOffsetLocked(evictPos);
+            this.dropCount++;
+        }
+
+        int tail = (this.sfHead + this.sfCount) % STORE_FORWARD_CAPACITY;
+        this.sfTopics[tail] = topic;
+        this.sfPayloads[tail] = payload;
+        this.sfPriorities[tail] = priority;
+        this.sfQos[tail] = qos;
+        this.sfCount++;
+        return true;
+    }
+
+    private void prependStoreAndForwardLocked(String topic, byte[] payload, int priority, int qos) {
+        if (this.sfCount == STORE_FORWARD_CAPACITY) {
+            int evictPos = findOldestLowPrioritySfOffsetLocked(priority);
+
+            if (evictPos >= 0) {
+                removeSfOffsetLocked(evictPos);
+                this.dropCount++;
+            } else {
+                this.dropCount++;
+                return;
+            }
+        }
+
+        this.sfHead = (this.sfHead - 1 + STORE_FORWARD_CAPACITY) % STORE_FORWARD_CAPACITY;
+        this.sfTopics[this.sfHead] = topic;
+        this.sfPayloads[this.sfHead] = payload;
+        this.sfPriorities[this.sfHead] = priority;
+        this.sfQos[this.sfHead] = qos;
+        this.sfCount++;
+    }
+
+    private int findOldestLowPrioritySfOffsetLocked(int incomingPriority) {
+        int worstOffset = -1;
+        int worstPriority = incomingPriority;
+
+        for (int offset = 0; offset < this.sfCount; offset++) {
+            int idx = (this.sfHead + offset) % STORE_FORWARD_CAPACITY;
+            int p = this.sfPriorities[idx];
+
+            if (p > worstPriority) {
+                worstPriority = p;
+                worstOffset = offset;
+            }
+        }
+
+        if (worstOffset >= 0) {
+            return worstOffset;
+        }
+
+        return this.sfCount > 0 ? 0 : -1;
+    }
+
+    private void removeSfOffsetLocked(int offset) {
+        for (int pos = offset; pos < this.sfCount - 1; pos++) {
+            int dst = (this.sfHead + pos) % STORE_FORWARD_CAPACITY;
+            int src = (this.sfHead + pos + 1) % STORE_FORWARD_CAPACITY;
+            this.sfTopics[dst] = this.sfTopics[src];
+            this.sfPayloads[dst] = this.sfPayloads[src];
+            this.sfPriorities[dst] = this.sfPriorities[src];
+            this.sfQos[dst] = this.sfQos[src];
+        }
+
+        int last = (this.sfHead + this.sfCount - 1) % STORE_FORWARD_CAPACITY;
+        this.sfTopics[last] = null;
+        this.sfPayloads[last] = null;
+        this.sfCount--;
+    }
+
+    private void processRamQueue() throws MqttException {
         while (!this.provisioningPaused) {
             final String topic;
             final byte[] payload;
+            final int priority;
+            final int qos;
+            final boolean bufferable;
 
             synchronized (this) {
-                if (this.outboundCount == 0) {
+                if (this.ramCount == 0) {
                     return;
                 }
 
-                topic = this.outboundTopics[this.outboundHead];
-                payload = this.outboundPayloads[this.outboundHead];
-                this.outboundTopics[this.outboundHead] = null;
-                this.outboundPayloads[this.outboundHead] = null;
-                this.outboundHead = (this.outboundHead + 1) % OUTBOUND_QUEUE_CAPACITY;
-                this.outboundCount--;
+                int best = dequeueBestRamIndexLocked();
+                topic = this.ramTopics[best];
+                payload = this.ramPayloads[best];
+                priority = this.ramPriorities[best];
+                qos = this.ramQos[best];
+                bufferable = this.ramBufferable[best];
+                removeRamIndexLocked(best);
+
+                if (!isCloudReady() || (bufferable && this.sfCount > 0)) {
+                    if (bufferable) {
+                        appendStoreAndForwardLocked(topic, payload, priority, qos);
+                    } else {
+                        this.dropCount++;
+                    }
+                    continue;
+                }
             }
 
-            MqttClient client = this.mqttClient;
+            MqttClient client = this.cloudClient;
 
             if (client == null || !client.isConnected()) {
-                LOGGER.log(Level.WARNING, "MQTT publish dropped | not connected | topic=" + topic);
-                continue;
+                if (bufferable) {
+                    synchronized (this) {
+                        appendStoreAndForwardLocked(topic, payload, priority, qos);
+                    }
+                }
+                return;
             }
 
-            client.publish(topic, payload, COLLABORATION_QOS, false);
-            LOGGER.log(Level.INFO, "[MQTT] Published | topic=" + topic + " | bytes=" + payload.length);
+            try {
+                client.publish(topic, payload, qos, false);
+                synchronized (this) {
+                    this.txSuccessCount++;
+                }
+            } catch (MqttException exception) {
+                if (bufferable) {
+                    synchronized (this) {
+                        appendStoreAndForwardLocked(topic, payload, priority, qos);
+                    }
+                }
+                throw exception;
+            }
+        }
+    }
+
+    private void processStoreAndForwardReplay() throws MqttException {
+        if (this.provisioningPaused) {
+            return;
+        }
+
+        long now = Util.platformTimeMillis();
+        final String topic;
+        final byte[] payload;
+        final int priority;
+        final int qos;
+
+        synchronized (this) {
+            if (this.sfCount == 0 || !isCloudReady()) {
+                return;
+            }
+
+            if (now - this.lastReplayAt < REPLAY_INTERVAL_MS) {
+                return;
+            }
+
+            topic = this.sfTopics[this.sfHead];
+            payload = this.sfPayloads[this.sfHead];
+            priority = this.sfPriorities[this.sfHead];
+            qos = this.sfQos[this.sfHead];
+            this.sfTopics[this.sfHead] = null;
+            this.sfPayloads[this.sfHead] = null;
+            this.sfHead = (this.sfHead + 1) % STORE_FORWARD_CAPACITY;
+            this.sfCount--;
+            this.lastReplayAt = now;
+        }
+
+        MqttClient client = this.cloudClient;
+
+        if (client == null || !client.isConnected()) {
+            synchronized (this) {
+                prependStoreAndForwardLocked(topic, payload, priority, qos);
+            }
+            return;
+        }
+
+        try {
+            client.publish(topic, payload, qos, false);
+
+            synchronized (this) {
+                this.txSuccessCount++;
+            }
+
+            LOGGER.log(Level.INFO, "[S&F] Replayed | topic=" + topic + " | remaining=" + getSfCount());
+        } catch (MqttException exception) {
+            synchronized (this) {
+                prependStoreAndForwardLocked(topic, payload, priority, qos);
+            }
+            throw exception;
+        }
+    }
+
+    private void publishDiagnosticsIfDue() throws MqttException {
+        long now = Util.platformTimeMillis();
+
+        final int ramQ;
+        final int sfQ;
+        final long drops;
+        final long txOk;
+
+        synchronized (this) {
+            if (!isCloudReady() || this.sfCount > 0) {
+                return;
+            }
+
+            if (now - this.lastDiagPublishedAt < DIAG_INTERVAL_MS) {
+                return;
+            }
+
+            this.lastDiagPublishedAt = now;
+            ramQ = this.ramCount;
+            sfQ = this.sfCount;
+            drops = this.dropCount;
+            txOk = this.txSuccessCount;
+        }
+
+        long javaHeapFree = Runtime.getRuntime().freeMemory();
+        int nativeHeapFree = SystemDiagNative.getFreeNativeHeapBytes();
+        int nativeHeapMin = SystemDiagNative.getMinFreeNativeHeapBytes();
+        int cpuPct = SystemDiagNative.getCpuLoadPercent();
+        int loraDrops = LoRaNative.getDroppedCount();
+        long ts = Util.currentTimeMillis();
+
+        StringBuilder json = new StringBuilder(192);
+        json.append("{\"h_id\":\"").append(HOUSE_ID).append('\"');
+        json.append(",\"ram_q\":").append(ramQ);
+        json.append(",\"sf_q\":").append(sfQ);
+        json.append(",\"drops\":").append(drops);
+        json.append(",\"lora_drops\":").append(loraDrops);
+        json.append(",\"tx_ok\":").append(txOk);
+        json.append(",\"heap_free\":").append(javaHeapFree);
+        json.append(",\"native_free\":").append(nativeHeapFree);
+        json.append(",\"native_min\":").append(nativeHeapMin);
+        json.append(",\"cpu_pct\":").append(cpuPct);
+        json.append(",\"up\":1");
+        json.append(",\"ts\":").append(ts);
+        json.append('}');
+
+        MqttClient client = this.cloudClient;
+
+        if (client != null && client.isConnected()) {
+            client.publish(SYS_DIAG_TOPIC, json.toString().getBytes(), TELEMETRY_QOS, false);
+        }
+    }
+
+    private synchronized boolean enqueueEdgeOutbound(String topic, byte[] payload, int qos) {
+        boolean queued = enqueueEdgeOutboundLocked(topic, payload, qos);
+        notifyAll();
+        return queued;
+    }
+
+    private boolean enqueueEdgeOutboundLocked(String topic, byte[] payload, int qos) {
+        if (this.edgeCount == EDGE_OUTBOUND_CAPACITY) {
+            this.edgeHead = (this.edgeHead + 1) % EDGE_OUTBOUND_CAPACITY;
+            this.edgeCount--;
+            this.dropCount++;
+        }
+
+        int tail = (this.edgeHead + this.edgeCount) % EDGE_OUTBOUND_CAPACITY;
+        this.edgeTopics[tail] = topic;
+        this.edgePayloads[tail] = payload;
+        this.edgeQos[tail] = qos;
+        this.edgeCount++;
+        return true;
+    }
+
+    private void processEdgeOutboundQueue() throws MqttException {
+        while (!this.provisioningPaused && this.edgeBrokerUri != null) {
+            final String topic;
+            final byte[] payload;
+            final int qos;
+
+            synchronized (this) {
+                if (this.edgeCount == 0) {
+                    return;
+                }
+
+                topic = this.edgeTopics[this.edgeHead];
+                payload = this.edgePayloads[this.edgeHead];
+                qos = this.edgeQos[this.edgeHead];
+                this.edgeTopics[this.edgeHead] = null;
+                this.edgePayloads[this.edgeHead] = null;
+                this.edgeHead = (this.edgeHead + 1) % EDGE_OUTBOUND_CAPACITY;
+                this.edgeCount--;
+            }
+
+            MqttClient client = this.edgeClient;
+
+            if (client == null || !client.isConnected()) {
+                return;
+            }
+
+            client.publish(topic, payload, qos, false);
         }
     }
 
@@ -973,6 +1711,6 @@ public final class MqttSubscribeService {
     }
 
     public synchronized boolean isConnected() {
-        return this.mqttClient != null && this.mqttClient.isConnected();
+        return this.cloudClient != null && this.cloudClient.isConnected();
     }
 }
