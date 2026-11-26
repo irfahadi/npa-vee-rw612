@@ -90,6 +90,7 @@ public final class MqttSubscribeService {
 
     // Capacities sized for FRDM-RW612 128 KB Java heap
     private static final int RAM_QUEUE_CAPACITY = 48;
+    private static final int MAX_RAM_PUBLISH_BATCH = 8;
     private static final int STORE_FORWARD_CAPACITY = 128;
     private static final int EDGE_OUTBOUND_CAPACITY = 16;
     private static final int PUMP_TIMER_INDEX = 0;
@@ -1406,7 +1407,9 @@ public final class MqttSubscribeService {
     }
 
     private void processRamQueue() throws MqttException {
-        while (!this.provisioningPaused) {
+        int processed = 0;
+
+        while (!this.provisioningPaused && processed < MAX_RAM_PUBLISH_BATCH) {
             final String topic;
             final byte[] payload;
             final int priority;
@@ -1432,6 +1435,7 @@ public final class MqttSubscribeService {
                     } else {
                         this.dropCount++;
                     }
+                    processed++;
                     continue;
                 }
             }
@@ -1460,6 +1464,8 @@ public final class MqttSubscribeService {
                 }
                 throw exception;
             }
+
+            processed++;
         }
     }
 
