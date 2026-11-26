@@ -100,14 +100,19 @@ public final class TimeService {
     public boolean synchronizeTime() {
         waitForRtcInitialization();
 
-        if (isTimeSynchronized()) {
-            LOGGER.log(Level.INFO, "Time already available from RTC | NTP synchronization skipped.");
+        boolean rtcReady = isTimeSynchronized();
+        LOGGER.log(Level.INFO, "Synchronizing clock via NTP | rtcReady=" + rtcReady);
+
+        if (synchronizeFromNtp()) {
             return true;
         }
 
-        LOGGER.log(Level.INFO, "No valid RTC time available | NTP synchronization required.");
+        if (rtcReady) {
+            LOGGER.log(Level.WARNING, "NTP unavailable | falling back to RTC time.");
+            return true;
+        }
 
-        return synchronizeFromNtp();
+        return false;
     }
 
     public synchronized boolean isTimeSynchronized() {

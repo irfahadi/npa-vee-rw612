@@ -63,6 +63,7 @@ public final class WifiProvisioningService {
     private volatile String submittedProvisioningSsid;
     private volatile String submittedProvisioningPassword;
     private volatile String submittedProvisioningBroker;
+    private volatile String submittedProvisioningEdgeBroker;
 
     private WifiCredentials connectedCredentials;
     private WifiCredentials previousConnectedCredentials;
@@ -336,6 +337,7 @@ public final class WifiProvisioningService {
         String targetSsid = null;
         String targetPassword = null;
         String targetBroker = null;
+        String targetEdgeBroker = null;
         String failureMessage = null;
         boolean credentialsSubmitted = false;
 
@@ -383,6 +385,7 @@ public final class WifiProvisioningService {
                     targetSsid = this.submittedProvisioningSsid;
                     targetPassword = this.submittedProvisioningPassword;
                     targetBroker = this.submittedProvisioningBroker;
+                    targetEdgeBroker = this.submittedProvisioningEdgeBroker;
 
                     setState(WifiProvisioningState.CONNECTING);
                     notifyConnecting(targetSsid);
@@ -455,6 +458,12 @@ public final class WifiProvisioningService {
                     this.credentialStore.saveBrokerAddress(targetBroker);
                 } catch (RuntimeException brokerException) {
                     LOGGER.log(Level.WARNING, "Unable to persist MQTT broker address | broker=" + targetBroker + " | error=" + brokerException);
+                }
+
+                try {
+                    this.credentialStore.saveEdgeBrokerAddress(targetEdgeBroker);
+                } catch (RuntimeException edgeBrokerException) {
+                    LOGGER.log(Level.WARNING, "Unable to persist edge MQTT broker address | edgeBroker=" + targetEdgeBroker + " | error=" + edgeBrokerException);
                 }
             } catch (RuntimeException exception) {
                 connected = false;
@@ -653,7 +662,8 @@ public final class WifiProvisioningService {
                                             accessPoint.getSSID(),
                                             accessPoint.getRSSI(),
                                             loadStoredBrokerAddress(),
-                                            BrokerConfig.DEFAULT_BROKER_ADDRESS
+                                            BrokerConfig.DEFAULT_BROKER_ADDRESS,
+                                            loadStoredEdgeBrokerAddress()
                                     )
                             );
                         } catch (IOException exception) {
@@ -724,6 +734,17 @@ public final class WifiProvisioningService {
                                 return;
                             }
 
+                            String edgeBrokerInput = parameters.get("edge_broker");
+                            String edgeBroker = BrokerConfig.normalize(edgeBrokerInput);
+
+                            if (edgeBrokerInput != null && edgeBrokerInput.trim().length() > 0 && edgeBroker == null) {
+                                setProvisioningHtmlResponse(
+                                        response,
+                                        WifiPortalView.buildErrorPage("Edge broker tidak valid", "Isi alamat edge broker MQTT seperti 192.168.1.50:1883, atau kosongkan untuk mode 1 broker.")
+                                );
+                                return;
+                            }
+
                             if (WifiProvisioningService.this.provisioningCredentialsSubmitted) {
                                 setProvisioningHtmlResponse(response, WifiPortalView.buildConnectingPage(ssid));
                                 return;
@@ -734,9 +755,10 @@ public final class WifiProvisioningService {
                             WifiProvisioningService.this.submittedProvisioningSsid = ssid;
                             WifiProvisioningService.this.submittedProvisioningPassword = password;
                             WifiProvisioningService.this.submittedProvisioningBroker = broker;
+                            WifiProvisioningService.this.submittedProvisioningEdgeBroker = edgeBroker;
                             WifiProvisioningService.this.provisioningCredentialsSubmitted = true;
 
-                            LOGGER.log(Level.INFO, "Provisioning credentials queued | SSID=" + ssid + " | passwordLength=" + password.length() + " | broker=" + (broker == null ? "(default)" : broker));
+                            LOGGER.log(Level.INFO, "Provisioning credentials queued | SSID=" + ssid + " | passwordLength=" + password.length() + " | broker=" + (broker == null ? "(default)" : broker) + " | edgeBroker=" + (edgeBroker == null ? "(none)" : edgeBroker));
                         } catch (IOException exception) {
                             LOGGER.log(Level.WARNING, "Unable to process provisioning credentials | error=" + exception);
 
@@ -803,6 +825,7 @@ public final class WifiProvisioningService {
         this.submittedProvisioningSsid = null;
         this.submittedProvisioningPassword = null;
         this.submittedProvisioningBroker = null;
+        this.submittedProvisioningEdgeBroker = null;
     }
 
     private void setProvisioningHtmlResponse(HttpResponse response, String page) {
@@ -846,6 +869,15 @@ public final class WifiProvisioningService {
             return this.credentialStore.loadBrokerAddress();
         } catch (RuntimeException exception) {
             LOGGER.log(Level.WARNING, "Unable to read stored MQTT broker address | error=" + exception);
+            return null;
+        }
+    }
+
+    private String loadStoredEdgeBrokerAddress() {
+        try {
+            return this.credentialStore.loadEdgeBrokerAddress();
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Unable to read stored edge MQTT broker address | error=" + exception);
             return null;
         }
     }

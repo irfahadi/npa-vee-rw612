@@ -49,46 +49,50 @@ public final class LoRaHardwareService {
         this.mqttSubscribeService = mqttSubscribeService;
     }
 
+    private static final int MAX_PACKETS_PER_POLL = 16;
+
     public void poll() {
-        boolean dataAvailable = LoRaNative.readLatest(this.snapshot);
+        for (int count = 0; count < MAX_PACKETS_PER_POLL; count++) {
+            boolean dataAvailable = LoRaNative.popNext(this.snapshot);
 
-        if (!dataAvailable) {
-            return;
-        }
+            if (!dataAvailable) {
+                return;
+            }
 
-        int sequence = this.snapshot[LoRaNative.INDEX_SEQUENCE];
+            int sequence = this.snapshot[LoRaNative.INDEX_SEQUENCE];
 
-        if (sequence == this.lastSequence) {
-            return;
-        }
+            if (sequence == this.lastSequence) {
+                continue;
+            }
 
-        this.lastSequence = sequence;
+            this.lastSequence = sequence;
 
-        final SensorData sensorData = createSensorData(this.snapshot);
-        final long receivedTimestamp = Util.currentTimeMillis();
-        final String shortTime = Time.formatJakartaTime(receivedTimestamp);
-        final String fullTime = Time.formatJakartaDateTime(receivedTimestamp);
-        final int packetSequence = sequence;
-        final int packetRssi = this.snapshot[LoRaNative.INDEX_RSSI];
+            final SensorData sensorData = createSensorData(this.snapshot);
+            final long receivedTimestamp = Util.currentTimeMillis();
+            final String shortTime = Time.formatJakartaTime(receivedTimestamp);
+            final String fullTime = Time.formatJakartaDateTime(receivedTimestamp);
+            final int packetSequence = sequence;
+            final int packetRssi = this.snapshot[LoRaNative.INDEX_RSSI];
 
-        // telemetry/env: Sensor LoRa -> Sink Node -> Cloud
-        if (this.mqttSubscribeService != null) {
-            this.mqttSubscribeService.publishTelemetry(sensorData, packetSequence, packetRssi, receivedTimestamp);
-        }
+            // telemetry/env: Sensor LoRa -> Sink Node -> Cloud (buffered when offline)
+            if (this.mqttSubscribeService != null) {
+                this.mqttSubscribeService.publishTelemetry(sensorData, packetSequence, packetRssi, receivedTimestamp);
+            }
 
-        MicroUI.callSerially(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        LoRaHardwareService.this.sensorDataStore.upsert(sensorData);
-                        LoRaHardwareService.this.sensorHistoryStore.add(new SensorHistoryEntry(shortTime, fullTime, sensorData));
-                        LoRaHardwareService.this.overviewController.refresh();
-                        LoRaHardwareService.this.sensorDetailController.refreshIfOpen();
+            MicroUI.callSerially(
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            LoRaHardwareService.this.sensorDataStore.upsert(sensorData);
+                            LoRaHardwareService.this.sensorHistoryStore.add(new SensorHistoryEntry(shortTime, fullTime, sensorData));
+                            LoRaHardwareService.this.overviewController.refresh();
+                            LoRaHardwareService.this.sensorDetailController.refreshIfOpen();
 
-                        LOGGER.log(Level.INFO, "LoRa data applied | sequence=" + packetSequence + " | nodeId=" + sensorData.getNodeId() + " | targetId=" + sensorData.getTargetId() + " | N=" + sensorData.getN() + " | P=" + sensorData.getP() + " | K=" + sensorData.getK() + " | RSSI=" + packetRssi + " dBm");
+                            LOGGER.log(Level.INFO, "LoRa data applied | sequence=" + packetSequence + " | nodeId=" + sensorData.getNodeId() + " | targetId=" + sensorData.getTargetId() + " | N=" + sensorData.getN() + " | P=" + sensorData.getP() + " | K=" + sensorData.getK() + " | RSSI=" + packetRssi + " dBm");
+                        }
                     }
-                }
-        );
+            );
+        }
     }
 
     private SensorData createSensorData(int[] source) {

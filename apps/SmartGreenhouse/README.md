@@ -39,13 +39,20 @@ Notes:
 - `telemetry/env` attributes follow the existing LoRa sensor payload: `sm` soil moisture (%),
   `st` soil temperature (°C), `ec` conductivity, `ph`, `n`/`p`/`k`, `at` air temperature (°C),
   `ah` air humidity (%), `lux` light intensity, `rssi` LoRa RSSI (dBm). `n_id` is the LoRa node id,
-  `seq` the Sink Node packet counter and `ts` the Unix time in seconds.
+  `seq` the Sink Node packet counter and `ts` the Unix time in milliseconds.
 - Mission messages are forwarded unchanged. A message is dropped when it exceeds the size limit or
   misses `m_id` (plus `cmd`, `st` or `tray_id` respectively).
 - `act_id` is `VALVE1`, `VALVE2` or `PUMP`; `action` is `ON` or `OFF`. When `dur_s` > 0 the Sink Node
   sends the OFF command itself after `dur_s` seconds. The Unit Kontrol keeps its existing protocol and
   still reports its state on `gh01/node/255/status/valve<n>` (and `.../status/pump`).
-- Messages are only published while MQTT is connected; nothing is buffered while offline.
+- Outbound Cloud messages (`telemetry/env`, `mission/status`, `mission/result`, actuator commands) pass
+  through a 48-slot priority RAM queue (`command/actuator` > `status/result` > `telemetry` > `stress/diag`)
+  and a 128-slot FIFO Store-and-Forward buffer when disconnected, replayed in order on reconnect.
+- Optional **2-broker mode**: enter an Edge MQTT broker IP in the WiFi provisioning portal
+  (`edge_broker`) so the Sink Node bridges local robot traffic (`gh01/agent/mission/*`) on the Edge
+  broker to the Cloud broker while buffering during Cloud backhaul outages.
+- Diagnostics are published every 1 s on `gh01/sys/diag` (`ram_q`, `sf_q`, `drops`, `lora_drops`,
+  `tx_ok`, `heap_free`, `native_free`, `native_min`, `cpu_pct`, `up`, `ts`).
 
 # Scenario test (laptop as Cloud, Collaboration Agent and Unit Kontrol)
 

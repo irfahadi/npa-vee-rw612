@@ -34,4 +34,10 @@ bool LORA_CopyLatestData(
     lora_latest_data_t *destination
 );
 
+bool LORA_PopPacket(
+    lora_latest_data_t *destination
+);
+
+uint32_t LORA_GetDroppedCount(void);
+
 #endif

@@ -46,6 +46,13 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
     private static final byte BROKER_MARKER = 'B';
     private static final int MAX_BROKER_BYTES = 64;
 
+    // Optional local/edge MQTT broker block (for 2-broker Store-and-Forward mode).
+    // Layout: [marker 'E'][length][address bytes (max 64)] starting at offset 374 (374+2+64 = 440 <= 512).
+    private static final int EDGE_BROKER_BLOCK_OFFSET = BROKER_DATA_OFFSET + MAX_BROKER_BYTES;
+    private static final int EDGE_BROKER_LENGTH_OFFSET = EDGE_BROKER_BLOCK_OFFSET + 1;
+    private static final int EDGE_BROKER_DATA_OFFSET = EDGE_BROKER_BLOCK_OFFSET + 2;
+    private static final byte EDGE_BROKER_MARKER = 'E';
+
     @Override
     public int getMaxSavedNetworks() {
         return MAX_SAVED_NETWORKS;
@@ -95,14 +102,14 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
         WifiCredentials[] stored = new WifiCredentials[count];
         System.arraycopy(next, 0, stored, 0, count);
 
-        persist(stored, readBrokerInternal());
+        persist(stored, readBrokerInternal(), readEdgeBrokerInternal());
 
         LOGGER.log(Level.INFO, "WiFi credentials saved | SSID=" + credentials.getSsid() + " | stored=" + count);
     }
 
     @Override
     public synchronized void clear() {
-        persist(new WifiCredentials[0], readBrokerInternal());
+        persist(new WifiCredentials[0], readBrokerInternal(), readEdgeBrokerInternal());
         LOGGER.log(Level.INFO, "Stored WiFi credentials cleared");
     }
 
@@ -119,31 +126,57 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
             throw new IllegalArgumentException("Alamat broker maksimal 64 byte.");
         }
 
-        persist(readAllInternal(), address.length() == 0 ? null : address);
+        persist(readAllInternal(), address.length() == 0 ? null : address, readEdgeBrokerInternal());
 
         LOGGER.log(Level.INFO, "MQTT broker address saved | broker=" + (address.length() == 0 ? "(default)" : address));
     }
 
+    @Override
+    public synchronized String loadEdgeBrokerAddress() {
+        return readEdgeBrokerInternal();
+    }
+
+    @Override
+    public synchronized void saveEdgeBrokerAddress(String edgeBrokerAddress) {
+        String address = edgeBrokerAddress == null ? "" : edgeBrokerAddress.trim();
+
+        if (encodeUtf8(address).length > MAX_BROKER_BYTES) {
+            throw new IllegalArgumentException("Alamat edge broker maksimal 64 byte.");
+        }
+
+        persist(readAllInternal(), readBrokerInternal(), address.length() == 0 ? null : address);
+
+        LOGGER.log(Level.INFO, "Edge MQTT broker address saved | edgeBroker=" + (address.length() == 0 ? "(none)" : address));
+    }
+
     private String readBrokerInternal() {
+        return readBlockInternal(BROKER_BLOCK_OFFSET, BROKER_LENGTH_OFFSET, BROKER_DATA_OFFSET, BROKER_MARKER);
+    }
+
+    private String readEdgeBrokerInternal() {
+        return readBlockInternal(EDGE_BROKER_BLOCK_OFFSET, EDGE_BROKER_LENGTH_OFFSET, EDGE_BROKER_DATA_OFFSET, EDGE_BROKER_MARKER);
+    }
+
+    private String readBlockInternal(int blockOffset, int lengthOffset, int dataOffset, byte expectedMarker) {
         byte[] storage = new byte[STORAGE_BUFFER_SIZE];
         int storedLength = WifiCredentialNative.readNative(storage);
 
-        if (storedLength < BROKER_DATA_OFFSET || !isHeaderValid(storage)) {
+        if (storedLength < dataOffset || !isHeaderValid(storage)) {
             return null;
         }
 
-        if (storage[BROKER_BLOCK_OFFSET] != BROKER_MARKER) {
+        if (storage[blockOffset] != expectedMarker) {
             return null;
         }
 
-        int length = unsigned(storage[BROKER_LENGTH_OFFSET]);
+        int length = unsigned(storage[lengthOffset]);
 
-        if (length <= 0 || length > MAX_BROKER_BYTES || BROKER_DATA_OFFSET + length > storedLength) {
+        if (length <= 0 || length > MAX_BROKER_BYTES || dataOffset + length > storedLength) {
             return null;
         }
 
         byte[] addressBytes = new byte[length];
-        System.arraycopy(storage, BROKER_DATA_OFFSET, addressBytes, 0, length);
+        System.arraycopy(storage, dataOffset, addressBytes, 0, length);
 
         try {
             return new String(addressBytes, "UTF-8");
@@ -227,7 +260,7 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
         return result;
     }
 
-    private void persist(WifiCredentials[] credentials, String brokerAddress) {
+    private void persist(WifiCredentials[] credentials, String brokerAddress, String edgeBrokerAddress) {
         byte[] storage = new byte[STORAGE_BUFFER_SIZE];
 
         storage[0] = MAGIC_0;
@@ -250,6 +283,15 @@ public final class FlashWifiCredentialStore implements WifiCredentialStore {
             storage[BROKER_LENGTH_OFFSET] = (byte) brokerBytes.length;
             System.arraycopy(brokerBytes, 0, storage, BROKER_DATA_OFFSET, brokerBytes.length);
             length = BROKER_DATA_OFFSET + brokerBytes.length;
+        }
+
+        if (edgeBrokerAddress != null && edgeBrokerAddress.length() > 0) {
+            byte[] edgeBytes = encodeUtf8(edgeBrokerAddress);
+
+            storage[EDGE_BROKER_BLOCK_OFFSET] = EDGE_BROKER_MARKER;
+            storage[EDGE_BROKER_LENGTH_OFFSET] = (byte) edgeBytes.length;
+            System.arraycopy(edgeBytes, 0, storage, EDGE_BROKER_DATA_OFFSET, edgeBytes.length);
+            length = EDGE_BROKER_DATA_OFFSET + edgeBytes.length;
         }
 
         if (!WifiCredentialNative.writeNative(storage, length)) {
